@@ -1,0 +1,467 @@
+---
+title: "Neighborhood analysis of Xenium breast cancer data using hoodscanR"
+date: "`r Sys.Date()`"
+author: "Ning Liu"
+format:
+  pdf:
+    include-in-header:
+        text: |
+          \addtokomafont{section}{\bfseries\LARGE}
+          \addtokomafont{subsection}{\bfseries\Large}
+          \addtokomafont{subsubsection}{\bfseries\Large}
+          \addtokomafont{paragraph}{\bfseries\large}
+          \usepackage{fvextra}
+          \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+          \fvset{fontsize=\footnotesize}
+          \RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
+    code-line-numbers: false
+    geometry:
+      - left = 20mm
+      - right = 20mm
+    highlight-style: solarized
+    fig-format: png
+    fig-dpi: 300
+    fig-height: 6
+    fig-width: 8
+    fig-align: center
+    number-sections: true
+    number-depth: 4
+    fontsize: 11pt
+    execute:
+      echo: true
+      warning: false
+      cache: false
+    knitr:
+      opts_chunk:
+        tidy: formatR
+        prompt: true
+        R.options:
+          digits: 4
+          width: 80
+          scipen: 4
+          max.print: 80
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(tidyverse)
+library(SpatialExperiment)
+library(hoodscanR)
+```
+
+
+```{r}
+sce <- DropletUtils::read10xCounts("./data/xenium_bc_s1_rep1/cell_feature_matrix.h5")
+
+sce <- sce[rowData(sce)$Type == "Gene Expression",]
+
+cp <- read_csv("./data/xenium_bc_s1_rep1/cells.csv.gz") %>%
+  as.data.frame() %>%
+  mutate(cell_id = paste0("cell_",seq(nrow(.)))) %>%
+  column_to_rownames("cell_id")
+
+colnames(sce) <- paste0("cell_", colData(sce)$Barcode)
+
+sce_coldat <- colData(sce) %>% 
+  as.data.frame() %>% 
+  mutate(Sample = "Xenium_FFPE_Breast_cancer_Sample1_Rep1") %>%
+  mutate(Barcode = as.integer(Barcode))
+
+rownames(sce_coldat) <- rownames(colData(sce))
+
+all(rownames(cp) == rownames(sce_coldat))
+
+ct <- read_csv("./data/xenium_bc_s1_rep1/Cell_Barcode_Type_Matrices_rep1.csv")
+
+all(ct$Barcode, sce_coldat$Barcode)
+
+sce_coldat$cell_types <- ct$Cluster
+
+spe <- SpatialExperiment(assays = list("counts" = assay(sce, 1)), 
+                         rowData = rowData(sce), 
+                    sample_id = "Xenium_BC", 
+                    colData = DataFrame(cbind(sce_coldat, cp)), 
+                    spatialCoordsNames = c("x_centroid", "y_centroid"))
+
+spe <- spe[,colData(spe)$total_counts >= 10]
+
+spe <- spe[, !(colData(spe)$cell_types %in% c("Stromal_&_T_Cell_Hybrid",
+                                              "T_Cell_&_Tumor_Hybrid",
+                                              "Unlabeled",
+                                              "IRF7+_DCs",
+                                              "LAMP3+_DCs",
+                                              "Perivascular-Like",
+                                              "Mast_Cells"))]
+
+saveRDS(spe, "xenium_s1r1_spe.rds")
+
+```
+
+
+```{r}
+#sct_ann <- readRDS("./spe_xenium_bc_rep1_SCT_ann.rds")
+
+#all(colnames(sct_ann) == colnames(spe))
+
+#colData(spe)$cell_types <- colData(sct_ann)$Azimuth
+```
+
+
+
+```{r}
+spe <- readHoodData(spe, anno_col = "cell_types")
+```
+
+
+```{r}
+#library(randomcoloR)
+
+#set.seed(2333)
+
+#col.p <- distinctColorPalette(13)
+
+col.p <- c("#D2D9A0","#6FDA98","#7F78D8","#DDD658","#D6D1D5","#81D9D0","#D5577A",
+           "#D59ED0","#8BE358","#72A9D1","#9743E7","#D89064","#DD60D3")
+
+names(col.p) <- unique(colData(spe)$cell_annotation)
+
+#col.p["Prolif_Invasive_Tumor"] <- "navy"
+```
+
+
+
+```{r, fig.width=9, fig.height=7}
+plotTissue(spe, size = 0.05, alpha = 0.7, color = cell_annotation) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+  ggtitle("Xenium breast cancer sample1 rep1")
+
+ggsave("figures/xenium_bc_s1r1_cellannot.png", bg = "white",
+       width = 9, height = 6)
+```
+
+
+```{r}
+fnc <- findNearCells(spe, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+pm <- scanHoods(fnc$distance)
+pm2 <- mergeByGroup(pm, fnc$cells)
+spe <- mergeHoodSpe(spe, pm2)
+pmc <- colnames(pm2)
+```
+
+### for presentation
+
+```{r}
+set.seed(1)
+
+rcells <- colnames(spe)[sample(ncol(spe), 30)]
+```
+
+
+```{r}
+plotTissue(spe, targetcell = rcells, shape = ".", color = "gray")
+
+ggsave("figures/xenium_bc_s1r1_rcells30.png", bg = "white", width = 8, height = 6)
+```
+
+
+
+
+```{r, fig.height=6.5, fig.width=6}
+
+png("figures/xenium_probmatrix_heatmap.png", width = 5.5, height = 7, bg = "white",
+    units="in",res=1200)
+hm <- plotHoodMat(spe, pm_cols = pmc, hm_height = 11, hm_width = 7, title = "Neighborhoods probability", targetCells = rcells)
+ComplexHeatmap::draw(hm)
+dev.off()
+```
+
+
+```{r}
+pm2[c("cell_27620","cell_121102"),]
+```
+
+
+
+```{r}
+plotProbDist(spe, targetCells = c("cell_27620"), 
+             pm_col = pmc, fill = pmc, color = "black") +
+  xlab("Neighborhoods") +
+  ylab("Probability") +
+  scale_fill_manual(values = col.p) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))
+
+ggsave("figures/xenium_cell_27620_hood_distributions.png", bg = "white", width = 4, height = 4)
+```
+
+
+## if using the max probability as annotated neighborhood, how many cells have cell type different to it's neighborhood?
+
+This can demonstrate the importance of doing neighborhood analysis.
+
+```{r}
+x <- colData(spe)[,c("cell_annotation", pmc)] %>% as.data.frame(optional = TRUE)
+
+max_neighborhood <- apply(x[, -1], 1, function(row) {
+  max_value <- max(row)
+  column_names <- colnames(x)[-1]
+  max_column <- column_names[which(row == max_value)]
+  return(max_column)
+})
+
+x$hood <- max_neighborhood
+
+
+x <- x[,c("cell_annotation","hood")]
+```
+
+```{r}
+table(x$cell_annotation == x$hood)
+```
+
+can further investigate this by ploting each cell type, bar plot, proption on y axis, two color, one for cell types == neighborhood, one for !=.
+
+
+
+
+```{r}
+plotTissue(spe, targetcell = "cell_27620", color = cell_annotation,
+           size = 4, k_near = 100, targetsize = 6) +
+  scale_color_manual(values= col.p) +
+  ggtitle("cell_27620") +
+  theme(plot.title = element_text(size = 15))
+
+ggsave("figures/xenium_cell_27620.png", bg = "white", width = 6, height = 4)
+```
+
+```{r}
+plotTissue(spe, targetcell = "cell_121102", color = cell_annotation,
+           size = 4, k_near = 100, targetsize = 6) +
+  scale_color_manual(values= col.p) +
+  ggtitle("cell_121102")
+
+ggsave("figures/xenium_cell_121102.png", bg = "white", width = 6, height = 4)
+```
+
+
+
+```{r}
+spe <- calcMetrics(spe, pm_cols = pmc)
+```
+
+
+```{r, fig.width=7, fig.height=5}
+plotTissue(spe, color = entropy, size = 0.05, alpha = 0.6) +
+  scico::scale_color_scico(palette = "tokyo") +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=17),
+        legend.title = element_text(size = 20))
+
+ggsave("figures/xenium_entropy.png", bg = "white", width = 8, height = 6)
+```
+
+
+```{r, fig.width=7, fig.height=5}
+plotTissue(spe, color = perplexity, size = 0.05, alpha = 0.6) +
+  scico::scale_color_scico(palette = "turku") +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=17),
+        legend.title = element_text(size = 20))
+
+ggsave("figures/xenium_perplexity.png", bg = "white", width = 8, height = 6)
+```
+
+```{r}
+png("figures/xenium_colocal.png", width = 8, height = 6, bg = "white",
+    units="in",res=1200)
+colocalp <- plotColocal(spe, pm_cols = pmc, hm_width = 8, hm_height = 8)
+ComplexHeatmap::draw(colocalp)
+dev.off()
+
+```
+
+
+
+```{r}
+spe_sub <- spe[,colData(spe)$cell_annotation %in% c("CD4+_T_Cells","CD8+_T_Cells",
+                                                    "B_Cells","Macrophages_1",
+                                                    "Prolif_Invasive_Tumor",
+                                                    "Invasive_Tumor")]
+
+col.p_sub <- col.p[c("CD4+_T_Cells","CD8+_T_Cells",
+                     "B_Cells","Macrophages_1",
+                     "Prolif_Invasive_Tumor","Invasive_Tumor")]
+
+plotTissue(spe_sub, size = 0.5, alpha = 0.9, color = cell_annotation, shape = 16) +
+  scale_color_manual(values = col.p_sub) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+  ggtitle("Xenium breast cancer sample1 rep1-subset")
+
+ggsave("figures/xenium_bc_s1r1_subset_validate_colocal.png", bg = "white",
+       width = 8, height = 6, dpi = 500)
+```
+
+
+
+
+
+```{r}
+spe <- clustByHood(spe, pm_cols = pmc, algo = "Lloyd", k = 12)
+```
+
+
+```{r, fig.width=7, fig.height=5}
+set.seed(9494)
+col.p_c <- randomcoloR::distinctColorPalette(12)
+
+plotTissue(spe, color = clusters, size = 0.05, alpha = 0.8) +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5), nrow = 2))
+
+ggsave("figures/xenium_bc_s1r1_hoodclusts.png", bg = "white",
+       width = 8, height = 6)
+```
+
+
+
+```{r}
+plotProbDist(spe, pm_cols = pmc, by_cluster = TRUE, plot_all = TRUE,
+             show_clusters = as.character(seq(12))) +
+  xlab("Neighborhoods") +
+  ylab("Probability")
+
+ggsave("figures/xenium_clust_prob_dist.png", bg = "white",
+       width = 10, height = 9)
+```
+
+
+```{r}
+spe_stromalHoods <- spe[,colData(spe)$clusters %in% c("5","7")]
+spe_tumorHoods <- spe[,colData(spe)$clusters == "10"]
+spe_dcis1Hoods <- spe[,colData(spe)$clusters == "4"]
+spe_dcis2Hoods <- spe[,colData(spe)$clusters == "2"]
+```
+
+# s1r2 and s2
+
+```{r}
+sce2 <- DropletUtils::read10xCounts("./data/xenium_bc_s1_rep2/cell_feature_matrix.h5")
+
+sce2 <- sce2[rowData(sce2)$Type == "Gene Expression",]
+
+cp2 <- read_csv("./data/xenium_bc_s1_rep2/cells.csv.gz") %>%
+  as.data.frame() %>%
+  mutate(cell_id = paste0("cell_",seq(nrow(.)))) %>%
+  column_to_rownames("cell_id")
+
+colnames(sce2) <- paste0("cell_", colData(sce2)$Barcode)
+
+sce_coldat2 <- colData(sce2) %>% 
+  as.data.frame() %>% 
+  mutate(Sample = "Xenium_FFPE_Breast_cancer_Sample1_Rep1") %>%
+  mutate(Barcode = as.integer(Barcode))
+
+rownames(sce_coldat2) <- rownames(colData(sce2))
+
+all(rownames(cp2) == rownames(sce_coldat2))
+
+
+# get cell types
+ct2 <- read_csv("./data/xenium_bc_s1_rep2/Cell_Barcode_Type_Matrices_rep2.csv")
+
+all(ct2$Barcode, sce_coldat2$Barcode)
+
+sce_coldat2$cell_types <- ct2$Cluster
+
+spe2 <- SpatialExperiment(assays = list("counts" = assay(sce2, 1)), 
+                         rowData = rowData(sce2), 
+                    sample_id = "Xenium_BC", 
+                    colData = DataFrame(cbind(sce_coldat2, cp2)), 
+                    spatialCoordsNames = c("x_centroid", "y_centroid"))
+
+spe2 <- spe2[,colData(spe2)$total_counts >= 10]
+
+spe2 <- spe2[, !(colData(spe2)$cell_types %in% c("Stromal_&_T_Cell_Hybrid",
+                                              "T_Cell_&_Tumor_Hybrid",
+                                              "Unlabeled",
+                                              "IRF7+_DCs",
+                                              "LAMP3+_DCs",
+                                              "Perivascular-Like",
+                                              "Mast_Cells"))]
+```
+
+
+```{r}
+spe2 <- readHoodData(spe2, anno_col = "cell_types")
+```
+
+
+```{r, fig.width=9, fig.height=7}
+plotTissue(spe2, size = 0.05, alpha = 0.7, color = cell_annotation) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+  ggtitle("Xenium breast cancer sample1 rep2")
+
+ggsave("figures/xenium_bc_s1r2_cellannot.png", bg = "white",
+       width = 8, height = 6)
+```
+
+
+```{r}
+fnc2 <- findNearCells(spe2, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+pm_2 <- scanHoods(fnc2$distance)
+pm2_2 <- mergeByGroup(pm_2, fnc2$cells)
+spe2 <- mergeHoodSpe(spe2, pm2_2)
+pmc_2 <- colnames(pm2_2)
+spe2 <- calcMetrics(spe2, pm_cols = pmc_2)
+```
+
+
+```{r}
+spe2 <- clustByHood(spe2, pm_cols = pmc_2, algo = "Lloyd", k = 12)
+```
+
+
+```{r, fig.width=7, fig.height=5}
+plotTissue(spe2, color = clusters, size = 0.05, alpha = 0.8) +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5), nrow = 2))
+
+ggsave("figures/xenium_bc_s1r2_hoodclusts.png", bg = "white",
+       width = 8, height = 6)
+```
+
+
+```{r}
+plotProbDist(spe2, pm_cols = pmc_2, by_cluster = TRUE, plot_all = TRUE,
+             show_clusters = as.character(seq(12))) +
+  xlab("Neighborhoods") +
+  ylab("Probability")
+
+ggsave("figures/xenium_r2_clust_prob_dist.png", bg = "white",
+       width = 10, height = 9)
+```
+
+
+
+
+
+
+
+

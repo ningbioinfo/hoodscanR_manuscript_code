@@ -1,0 +1,474 @@
+---
+title: "hoodscanR:parameter k and tau testing"
+date: "`r Sys.Date()`"
+author: "Ning Liu"
+format:
+  pdf:
+    include-in-header:
+        text: |
+          \addtokomafont{section}{\bfseries\LARGE}
+          \addtokomafont{subsection}{\bfseries\Large}
+          \addtokomafont{subsubsection}{\bfseries\Large}
+          \addtokomafont{paragraph}{\bfseries\large}
+          \usepackage{fvextra}
+          \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+          \fvset{fontsize=\footnotesize}
+          \RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
+    code-line-numbers: false
+    geometry:
+      - left = 20mm
+      - right = 20mm
+    highlight-style: solarized
+    fig-format: png
+    fig-dpi: 300
+    fig-height: 6
+    fig-width: 8
+    fig-align: center
+    number-sections: true
+    number-depth: 4
+    fontsize: 11pt
+    execute:
+      echo: true
+      warning: false
+      cache: false
+    knitr:
+      opts_chunk:
+        tidy: formatR
+        prompt: true
+        R.options:
+          digits: 4
+          width: 80
+          scipen: 4
+          max.print: 80
+editor_options:
+  chunk_output_type: inline
+---
+
+The following experiments aim to test how different parameter k and tau would affect the results of neighborhood identification from hoodscanR, here I use a xenium breast cancer dataset as test data.
+
+```{r, message=FALSE}
+library(tidyverse)
+library(SpatialExperiment)
+library(scran)
+library(patchwork)
+library(grid)
+library(ComplexHeatmap)
+spe <- readRDS("./spe_xenium_bc_rep1.rds")
+
+```
+
+# Test dataset: Xenium breast cancer
+
+```{r}
+spe
+```
+
+```{r}
+colData(spe)
+```
+
+```{r}
+col.pal <- c("cyan2","maroon","yellowgreen","royalblue","peru","salmon","purple3","darkgreen","gold")
+
+names(col.pal) <- unique(colData(spe)$cell_annotation)
+```
+
+```{r}
+plotTissue(spe, color = cell_annotation, shape = ".") +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(
+    override.aes=list(shape = 16, size = 5))) +
+  scale_color_manual(values = col.pal)
+```
+
+# Parameter k testing
+
+The parameter k is the number of neighboring cells to be considered when identifying neighborhoods.
+
+Here I test k = 10, 50, 100, 200, 500, 1000.
+
+While k is set to different values, tau is calculated based on the default setting, which is median(m**2)/5, where m is the distance matrix.
+
+```{r}
+ks <- c(10, 50, 100, 200, 500, 1000)
+
+fnc_list <- list()
+pm_list <- list()
+pm2_list <- list()
+spe_list <- list()
+compute_times <- c()
+for(i in 1:6){
+  start.time <- Sys.time()
+  fnc_list[[i]] <- findNearCells(spe, k = ks[i], reportDist = TRUE, anno_col = "cell_annotation")
+  pm_list[[i]] <- scanHoods(fnc_list[[i]]$distance)
+  pm2_list[[i]] <- mergeByGroup(pm_list[[i]], fnc_list[[i]]$cells)
+  spe_list[[i]] <- mergeHoodSpe(spe, pm2_list[[i]])
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  compute_times[i] <- time.taken
+}
+
+
+```
+
+```{r}
+compute_times2 <- compute_times
+#compute_times2[3] <- compute_times2[3]*60
+#compute_times2[4] <- compute_times2[4]*60
+compute_times2[5] <- compute_times2[5]*60
+compute_times2[6] <- compute_times2[6]*60
+```
+
+
+With larger k, more neighboring cells are considered, hence the linearly increasing computing times.
+
+
+```{r}
+data.frame("k" = ks,
+           "time" = compute_times2) %>%
+  ggplot(aes(k, time)) + 
+  geom_point(size = 5, shape = 21, fill = "yellow") +
+  theme_bw() +
+  ylab("time(s)") +
+  geom_smooth(method='lm', formula= y~x, linewidth = 1) +
+  ggtitle("The choice of k affecting computing time")
+```
+
+```{r}
+pmc <- colnames(pm2_list[[1]])
+```
+
+```{r}
+for(i in 1:6){
+  spe_list[[i]] <- calcMetrics(spe_list[[i]], pm_cols = pmc)
+}
+```
+
+```{r}
+entropy_plot_list <- list()
+for(i in 1:6){
+  entropy_plot_list[[i]] <- plotTissue(spe_list[[i]], color = entropy, shape = 16, size = 0.1) +
+    scico::scale_color_scico(palette = "tokyo") +
+    theme(legend.position = "right") +
+    ggtitle(paste0("k = ", ks[i]))
+}
+
+```
+
+## Check entropy under different k.
+
+Smaller k give more distinct neighborhoods and overall lower entropy.
+
+```{r fig.width=20, fig.height=10}
+wrap_plots(entropy_plot_list)
+```
+
+
+```{r}
+lapply(spe_list, function(x){ data.frame("e" = colData(x)$entropy)}) %>%
+  bind_cols() %>%
+  magrittr::set_colnames(paste0("k_",ks)) %>%
+  pivot_longer(colnames(.), names_to = "k", values_to = "entropy") %>%
+  mutate(k = factor(k, levels = paste0("k_",ks))) %>%
+  ggplot(aes(k, entropy)) +
+  geom_boxplot(fill = "gold", color = "black") +
+  theme_bw()
+
+
+```
+
+## Check neighborhood results
+
+Randomly pick 20 cells, and check their neighborhood probability distribution across different k.
+
+```{r}
+set.seed(111)
+cells <-sample(colnames(spe), 20)
+pm_plot_list <- list()
+for(i in 1:6){
+  pm_plot_list[[i]] <- plotProbDist(spe_list[[i]], pm_cols = pmc, targetCells = cells, hm_height = 10, hm_width = 7, clusterRows = FALSE, clusterCols = FALSE)
+}
+
+
+```
+
+
+With different k, the probability distribution of neighborhood changed in some cell. Specifically cell_140901, was identified as in a distinct normal.epithelial neighborhood with k = 10, but become in a mixed neighborhood of normal.epithelial and cancer.epithelial with lager k, and the probability with normal.epithelial being less and less.
+
+```{r fig.width=20, fig.height=8}
+pm_plot_list[[1]] + pm_plot_list[[2]] + pm_plot_list[[3]] + pm_plot_list[[4]] + pm_plot_list[[5]] + pm_plot_list[[6]]
+```
+
+
+Lets have a look at why this is happening by visualising the cell types around the cell_140901 in different area size (same as k = 10, 50, 100, 200, 500, 1000). 
+
+
+```{r}
+p_x <- list()
+for(i in seq(6)){
+  p_x[[i]] <- plot_tissue(spe, targetcell = "cell_140901", k_near = ks[i], color = cell_annotation) +
+    scale_color_manual(values = col.pal)
+}
+```
+
+
+```{r}
+wrap_plots(p_x) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "None")
+```
+
+
+
+```{r}
+num_matrices <- length(pm2_list)
+correlation_matrix <- matrix(NA, nrow = num_matrices, ncol = num_matrices)
+
+for (i in 1:num_matrices) {
+  for (j in 1:num_matrices) {
+    correlation_matrix[i, j] <- cor(c(pm2_list[[i]]), c(pm2_list[[j]]))
+  }
+}
+
+colnames(correlation_matrix) <- paste0("k_",ks)
+rownames(correlation_matrix) <- colnames(correlation_matrix)
+```
+
+
+We also see high correlation between probability matrix under different k, because there is a parameter tau that always giving higher weights to closer cells.
+
+
+```{r}
+ComplexHeatmap::Heatmap(correlation_matrix, cluster_rows = FALSE, cluster_columns = FALSE, col = scico::scico(200, palette = "bilbao"),
+                        cell_fun = function(j, i, x, y, width, height, fill) {
+                          grid.text(sprintf("%.3f", correlation_matrix[i, j]), x, y, gp = gpar(fontsize = 10, col = "black"))
+                          }, heatmap_legend_param = list(title = "Cor."))
+
+```
+
+
+k = 50, 100, 200 makes more sense to me (they tightly cluster together).
+
+# Parameter tau testing
+
+We set k to 100.
+
+```{r}
+fnc <- findNearCells(spe, k = 100, reportDist = TRUE, anno_col = "cell_annotation")
+
+d <- fnc$distance
+```
+
+To test the affect of different tau, I set different tau based on distance\^2.
+
+Here I set:
+
+quantile(d\^2, 0.1)/10, quantile(d\^2, 0.1)/5, 
+
+median(d\^2)/10, median(d\^2)/5, 
+
+quantile(d\^2, 0.75)/10, quantile(d\^2, 0.75)/5, 
+
+quantile(d\^2, 0.1), median(d\^2), quantile(d\^2, 0.75)
+
+
+```{r}
+ts <- c(quantile(d^2, 0.1)/10, quantile(d^2, 0.1)/5, median(d^2)/10, 
+        quantile(d^2, 0.75)/10, quantile(d^2, 0.1), median(d^2)/5,
+        quantile(d^2, 0.75)/5, median(d^2), quantile(d^2, 0.75)) %>%
+  as.numeric()
+```
+
+```{r}
+pm_list <- list()
+for(i in 1:9){
+  print(i)
+  pm_list[[i]] <- scanHoods(d, tau = ts[i])
+}
+```
+
+```{r}
+cs_plot_list <- list()
+
+for(i in 1:9){
+  df <- pm_list[[i]] %>%
+    .[sample(nrow(.),100,),] %>%
+    as.data.frame() %>%
+    magrittr::set_colnames(seq(100)) %>%
+    rownames_to_column("cells") %>%
+    pivot_longer(-cells, names_to = "nc", values_to = "p") %>%
+    group_by(cells) %>%
+    mutate(cp = cumsum(p)) %>%
+    mutate(nc = factor(nc, levels = seq(100)))
+  
+  cs_plot_list[[i]] <- df %>%
+    ggplot(aes(nc, cp)) +
+    geom_boxplot(outlier.shape = NA) +
+    theme_bw() +
+    ylab("cumsum(Probability)") +
+    ggtitle(paste0("Tau = ", ts[i])) +
+    scale_x_discrete(
+        "Nearest cell index", 
+        labels = c("1","25","50","75","100"), 
+        breaks = c(1,25,50,75,100), 
+        expand=c(0,0)
+    )
+  
+}
+
+
+```
+
+## Check probability accumulation
+
+
+Here I plot the accumulated probability of the 100 nearest cells, with different tau. Since the sum of probability distribution is always 1, when we see the accumulated proabability is 1, we know that the contribution of the rest of cells to the neighborhood are ignored.
+
+So, small tau would give you a very sharp shape, the neighborhood only accounts for the top nearest cells even though k is set to 100. With higher tau, the contribution from far-away cells increased, but would still be smaller than the near cells.
+Curretnly, the hoodscanR package uses a default of median(distance\^2)/5, i.e. the fourth plot here. 
+
+```{r, fig.height=15, fig.width=15}
+wrap_plots(cs_plot_list)
+
+ggsave("./figures/supfigure_different_tau_effect.png", bg = "white", width = 15, height = 15, dpi = 1000)
+```
+
+
+In one senario if the users want to have a very even probability distribution across the k cell decided, they can then use the "smoothFadeout" mode in the function.
+
+```{r}
+pm_bgfs <- scan_hoods(d, mode = "smoothFadeout")
+```
+
+In this mode, all k cells would be considered evenly for the neighborhood.
+
+```{r}
+pm_bgfs %>%
+  .[sample(nrow(.),100,),] %>%
+    as.data.frame() %>%
+    magrittr::set_colnames(seq(100)) %>%
+    rownames_to_column("cells") %>%
+    pivot_longer(-cells, names_to = "nc", values_to = "p") %>%
+    group_by(cells) %>%
+    mutate(cp = cumsum(p)) %>%
+    mutate(nc = factor(nc, levels = seq(100))) %>%
+    ggplot(aes(nc, cp)) +
+    geom_boxplot(outlier.shape = NA) +
+    theme_bw() +
+    ylab("cumsum(Probability)") +
+    xlab("Nearest cell") +
+    ggtitle(paste0("Tau = 67680.8559794922"))
+```
+
+## Check entropy
+
+
+
+```{r}
+pm2_list <- list()
+spe_list <- list()
+for(i in 1:9){
+  pm2_list[[i]] <- merge_by_group(pm_list[[i]], fnc$cells)
+  spe_list[[i]] <- merge_pm_spe(spe, pm2_list[[i]])
+}
+```
+
+
+```{r}
+pmc <- colnames(pm2_list[[1]])
+
+set.seed(111)
+cells <-sample(colnames(spe), 20)
+
+pm_list <- list()
+for(i in 1:9){
+  pm_list[[i]] <- plot_pm(spe_list[[i]], pm.cols = pmc, 
+                          targetCells = cells, hm_height = 10, 
+                          hm_width = 7, clusterRows = FALSE, clusterCols = FALSE, 
+                          title = paste0("tau = ", round(ts[i], 2)))
+}
+```
+
+```{r}
+for(i in 1:9){
+  spe_list[[i]] <- calc_metrics(spe_list[[i]], pm.cols = pmc)
+}
+```
+
+
+```{r}
+entropy_plot_list <- list()
+for(i in 1:9){
+  entropy_plot_list[[i]] <- plot_tissue(spe_list[[i]], color = entropy, shape = 16, size = 0.1) +
+    scico::scale_color_scico(palette = "tokyo") +
+    theme(legend.position = "right") +
+    ggtitle(paste0("tau = ", round(ts[i], 2)))
+}
+
+```
+
+
+Smaller tau gives more distinct neighborhoods, and overall lower entropy, makes the method focus a lot more on the local cells.
+
+```{r fig.width=20, fig.height=16}
+wrap_plots(entropy_plot_list)
+```
+
+```{r}
+lapply(spe_list, function(x){ data.frame("e" = colData(x)$entropy)}) %>%
+  bind_cols() %>%
+  magrittr::set_colnames(paste0("tau_",round(ts, 2))) %>%
+  pivot_longer(colnames(.), names_to = "tau", values_to = "entropy") %>%
+  mutate(tau = factor(tau, levels = paste0("tau_",round(ts, 2)))) %>%
+  ggplot(aes(tau, entropy)) +
+  geom_boxplot(fill = "gold", color = "black") +
+  theme_bw()
+```
+
+
+## Check neighborhood results
+
+
+```{r, fig.width=11, fig.height=8}
+pm_list[[1]] + pm_list[[2]] + pm_list[[3]]
+```
+
+
+```{r, fig.width=11, fig.height=8}
+pm_list[[4]] + pm_list[[5]] + pm_list[[6]]
+```
+
+
+```{r, fig.width=11, fig.height=8}
+pm_list[[7]] + pm_list[[8]] + pm_list[[9]]
+```
+
+
+```{r}
+num_matrices <- length(pm2_list)
+correlation_matrix <- matrix(NA, nrow = num_matrices, ncol = num_matrices)
+
+for (i in 1:num_matrices) {
+  for (j in 1:num_matrices) {
+    correlation_matrix[i, j] <- cor(c(pm2_list[[i]]), c(pm2_list[[j]]))
+  }
+}
+
+colnames(correlation_matrix) <- paste0("tau_",round(ts, 2))
+rownames(correlation_matrix) <- colnames(correlation_matrix)
+```
+
+
+
+
+
+```{r}
+ComplexHeatmap::Heatmap(correlation_matrix, cluster_rows = FALSE, cluster_columns = FALSE, col = scico::scico(200, palette = "bilbao"),
+                        cell_fun = function(j, i, x, y, width, height, fill) {
+                          grid.text(sprintf("%.3f", correlation_matrix[i, j]), x, y, gp = gpar(fontsize = 10, col = "black"))
+                          }, heatmap_legend_param = list(title = "Cor."))
+
+```
+
+
+

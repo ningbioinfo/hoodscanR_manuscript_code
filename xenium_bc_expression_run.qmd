@@ -1,0 +1,265 @@
+---
+title: "Neighborhood analysis of Xenium breast cancer data using hoodscanR (gene expression)"
+date: "`r Sys.Date()`"
+author: "Ning Liu"
+format:
+  pdf:
+    include-in-header:
+        text: |
+          \addtokomafont{section}{\bfseries\LARGE}
+          \addtokomafont{subsection}{\bfseries\Large}
+          \addtokomafont{subsubsection}{\bfseries\Large}
+          \addtokomafont{paragraph}{\bfseries\large}
+          \usepackage{fvextra}
+          \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+          \fvset{fontsize=\footnotesize}
+          \RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
+    code-line-numbers: false
+    geometry:
+      - left = 20mm
+      - right = 20mm
+    highlight-style: solarized
+    fig-format: png
+    fig-dpi: 300
+    fig-height: 6
+    fig-width: 8
+    fig-align: center
+    number-sections: true
+    number-depth: 4
+    fontsize: 11pt
+    execute:
+      echo: true
+      warning: false
+      cache: false
+    knitr:
+      opts_chunk:
+        tidy: formatR
+        prompt: true
+        R.options:
+          digits: 4
+          width: 80
+          scipen: 4
+          max.print: 80
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(tidyverse)
+library(SpatialExperiment)
+library(hoodscanR)
+```
+
+
+```{r}
+sce <- DropletUtils::read10xCounts("./data/xenium_bc_IDC/cell_feature_matrix.h5")
+
+sce <- sce[rowData(sce)$Type == "Gene Expression",]
+
+cp <- read_csv("./data/xenium_bc_IDC/cells.csv.gz") %>%
+  as.data.frame() %>%
+  mutate(cell_id = paste0("cell_",seq(nrow(.)))) %>%
+  column_to_rownames("cell_id")
+
+colnames(sce) <- paste0("cell_", colData(sce)$Barcode)
+
+sce_coldat <- colData(sce) %>% 
+  as.data.frame() %>% 
+  mutate(Sample = "Xenium_FFPE_Breast_cancer_Sample1_Rep1") %>%
+  mutate(Barcode = as.integer(Barcode))
+
+rownames(sce_coldat) <- rownames(colData(sce))
+
+rownames(sce) <- rowData(sce)$Symbol
+
+spe <- SpatialExperiment(assays = list("counts" = assay(sce, 1)), 
+                         rowData = rowData(sce), 
+                    sample_id = "Xenium_BC", 
+                    colData = DataFrame(cbind(sce_coldat, cp)), 
+                    spatialCoordsNames = c("x_centroid", "y_centroid"))
+```
+
+```{r}
+genes <- c("AR", "ESR1", "PGR")
+```
+
+
+```{r}
+ct <- assay(spe, 1)
+
+colData(spe)$Groups <- ifelse(ct["AR",]!= 0, "AR+", "AR-")
+colData(spe)$Groups <- ifelse(ct["ESR1",]!= 0, paste0(colData(spe)$Groups, "ESR1+"), 
+                              paste0(colData(spe)$Groups, "ESR1-"))
+colData(spe)$Groups <- ifelse(ct["PGR",]!= 0, paste0(colData(spe)$Groups, "PGR+"), 
+                              paste0(colData(spe)$Groups, "PGR-"))
+```
+
+
+```{r}
+library(randomcoloR)
+
+set.seed(114514)
+
+col.p <- c("#3C1053FF","#42EADDFF","#2C5F2DFF","#D01C1FFF","#DF6589FF",
+           "#FFD662FF","#00539CFF")
+
+col.p <- c("gray", col.p)
+
+names(col.p) <- sort(unique(colData(spe)$Groups))
+```
+
+
+
+```{r, fig.width=8, fig.height=9}
+plotTissue(spe, color = Groups, shape = ".") +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5), nrow = 2)) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 13))
+
+ggsave("figures/xenium_bc_IDC_groups.png", bg = "white", height = 9, width = 8, dpi = 500)
+```
+
+
+
+
+
+```{r}
+fnc <- findNearCells(spe, k = 100, anno_col = "Groups", reportDist = TRUE)
+pm <- scanHoods(fnc$distance)
+pm2 <- mergeByGroup(pm, fnc$cells)
+spe <- mergeHoodSpe(spe, pm2)
+pmc <- colnames(pm2)
+```
+
+```{r}
+plotColocal(spe, pm_cols = pmc)
+```
+
+
+```{r}
+spe <- calcMetrics(spe, pm_cols = pmc)
+```
+
+
+```{r, fig.width=6, fig.height=7}
+plotTissue(spe, color = entropy, shape = ".") +
+  scico::scale_color_scico(palette = "tokyo") +
+  theme(legend.position = "bottom")
+
+ggsave("figures/xenium_bc_IDC_entropy.png", bg = "white", height = 9, width = 8, dpi = 500)
+```
+
+
+```{r, fig.width=6, fig.height=7}
+plotTissue(spe, color = perplexity, shape = ".") +
+  scico::scale_color_scico(palette = "turku") +
+  theme(legend.position = "bottom",
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 13))
+
+ggsave("figures/xenium_bc_IDC_perplexity.png", bg = "white", height = 9, width = 8, dpi = 500)
+```
+
+```{r}
+set.seed(114514)
+spe <- clustByHood(spe, pm_cols = pmc, algo = "Lloyd", k = 7)
+```
+
+
+```{r, fig.width=6, fig.height=7}
+
+col.p_c <- c("#FFB6C1", "#FFD700", "#98FB98", "#87CEEB", "#FFA07A", "#C71585", "#00CED1", "#9370DB")
+names(col.p_c) <- seq(8)
+
+plotTissue(spe, color = clusters, shape = ".") +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=13),
+        legend.title=element_text(size=15)) +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5), nrow = 2))
+
+ggsave("figures/xenium_bc_IDC_cluster.png", bg = "white", height = 9, width = 8, dpi = 500)
+```
+
+```{r}
+plotProbDist(spe, pm_cols = pmc, by_cluster = TRUE, plot_all = TRUE,
+             show_clusters = as.character(seq(8)), color = clusters) +
+  xlab("Neighborhoods") +
+  ylab("Probability") +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))
+
+ggsave("figures/xenium_bc_IDC_cluster_distribution.png",
+       bg = "white", height = 6, width = 8)
+```
+
+
+```{r}
+pathRegion <- readRDS("data/xenium_bc_IDC_tx2cell_spe2.rds")
+colData(pathRegion) <- colData(pathRegion)[,!(colnames(colData(pathRegion)) %in% "cell_id")]
+pathRegion <- pathRegion[, colData(pathRegion)$sample_id == "IDC"]
+colnames(pathRegion) <- gsub("IDC","cell",colnames(pathRegion))
+```
+
+```{r, fig.width=8, fig.height=9}
+plotTissue(pathRegion, shape = ".", color = region) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5), nrow = 2)) +
+  scale_color_manual(values = c("#FF6F61", "#FFD700", "#9ACD32", "#87CEEB", "#FFA07A", "#9370DB", "#40E0D0", "#2C5F2DFF")) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=13),
+        legend.title=element_text(size=15))
+
+ggsave("figures/xenium_bc_IDC_pahtology_annotation.png", 
+       bg = "white", height = 9, width = 8, dpi = 500)
+```
+
+```{r}
+spe <- spe[,colnames(spe) %in% colnames(pathRegion)]
+```
+
+
+```{r}
+all(colnames(spe) == colnames(pathRegion))
+```
+
+```{r}
+colData(spe)$region <- colData(pathRegion)$region
+```
+
+
+```{r}
+colData(spe) %>%
+  as.data.frame() %>%
+  dplyr::select(c("region","clusters")) %>%
+  filter(region == "DCIS") %>%
+  .$clusters %>%
+  table()
+```
+
+
+```{r, fig.width=4, fig.height=5}
+spe_sub <- spe[,colData(spe)$clusters %in% c(3,5,6)]
+
+plotTissue(spe_sub, color = clusters, size = 0.1) +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=13),
+        legend.title=element_text(size=15)) +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5), nrow = 1))
+
+ggsave("figures/xenium_bc_IDC_subclusters.png", height = 7, width = 6, bg = "white", dpi = 700)
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,788 @@
+---
+title: "Neighborhood analysis of Cosmx NSCLC data using hoodscanR"
+date: "`r Sys.Date()`"
+author: "Ning Liu"
+format:
+  pdf:
+    include-in-header:
+        text: |
+          \addtokomafont{section}{\bfseries\LARGE}
+          \addtokomafont{subsection}{\bfseries\Large}
+          \addtokomafont{subsubsection}{\bfseries\Large}
+          \addtokomafont{paragraph}{\bfseries\large}
+          \usepackage{fvextra}
+          \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+          \fvset{fontsize=\footnotesize}
+          \RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
+    code-line-numbers: false
+    geometry:
+      - left = 20mm
+      - right = 20mm
+    highlight-style: solarized
+    fig-format: png
+    fig-dpi: 300
+    fig-height: 6
+    fig-width: 8
+    fig-align: center
+    number-sections: true
+    number-depth: 4
+    fontsize: 11pt
+    execute:
+      echo: true
+      warning: false
+      cache: false
+    knitr:
+      opts_chunk:
+        tidy: formatR
+        prompt: true
+        R.options:
+          digits: 4
+          width: 80
+          scipen: 4
+          max.print: 80
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(tidyverse)
+library(SpatialExperiment)
+library(hoodscanR)
+library(edgeR)
+library(patchwork)
+```
+
+```{r}
+annotation <- readRDS("nsclc_smi_lung5_SCT_ann_insitutype.rds")
+
+spe <- readRDS("spe_raw.rds")
+
+spe <- spe[, colData(spe)$slide %in% c("Lung5_Rep1",
+                                       "Lung5_Rep2",
+                                       "Lung5_Rep3")]
+
+spe <- spe[rownames(annotation),colnames(annotation)]
+
+colData(spe)$cell_types <- colData(annotation)$InSituType %>%
+  str_replace_all(., ".cell.type","")
+
+
+spe <- spe[,!(colData(spe)$cell_types %in% c("pDC","DC.mature","Ciliated",
+                                             "Ciliated","Club", "Monocyte",
+                                             "Macrophage.alveolar","NK.cell"))]
+
+spe <- SpatialExperiment(assay = list("counts" = assay(spe, 1)),
+                         colData = colData(spe),
+                         rowData = rowData(spe),
+                         spatialCoordsNames = c("CenterX_global_px", "CenterY_global_px"))
+
+```
+
+
+```{r}
+spe1 <- spe[,colData(spe)$slide == "Lung5_Rep1"]
+spe2 <- spe[,colData(spe)$slide == "Lung5_Rep2"]
+spe3 <- spe[,colData(spe)$slide == "Lung5_Rep3"]
+
+colnames(spe1) <- str_replace(colnames(spe1), "Lung5_Rep1", "cell")
+rownames(spatialCoords(spe1)) <- colnames(spe1)
+colnames(spe2) <- str_replace(colnames(spe2), "Lung5_Rep2", "cell")
+rownames(spatialCoords(spe2)) <- colnames(spe2)
+colnames(spe3) <- str_replace(colnames(spe3), "Lung5_Rep3", "cell")
+rownames(spatialCoords(spe3)) <- colnames(spe3)
+```
+
+
+```{r}
+spe1 <- readHoodData(spe1, "cell_types")
+spe2 <- readHoodData(spe2, "cell_types")
+spe3 <- readHoodData(spe3, "cell_types")
+
+assay(spe3, "logcounts") <- cpm(assay(spe3, 1), log = TRUE)
+assay(spe2, "logcounts") <- cpm(assay(spe2, 1), log = TRUE)
+assay(spe1, "logcounts") <- cpm(assay(spe1, 1), log = TRUE)
+
+```
+
+
+```{r}
+set.seed(114514)
+#col.p2 <- c("#FF0000", "#FF7F00", "#FFD700", "brown", "#00FF00", "#00FF7F", "#00FFFF", "#007FFF", "#0000FF", "#7F00FF", "#FF00FF", "#FF007F", "#FF6347", "#FFA07A", "#40E0D0", "#00BF00")
+
+col.p2 <- c("#6699CC", "#FF9966", "#FFFF99", "#CD853F", "#66CCCC", "#00CC99", "#99CCFF", "#6699CC", "#6666CC", "#CC99CC", "#FF99FF", "#FF6666", "#FF7F50", "#FFDAB9", "#AFEEEE", "#00CC00")
+
+
+names(col.p2) <- unique(colData(spe3)$cell_annotation)
+```
+
+
+```{r, fig.width=7, fig.height=5}
+plotTissue(spe3, size = 0.1, alpha = 0.8, color = cell_annotation) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5),nrow=3)) +
+  scale_color_manual(values = col.p2) +
+  ggtitle("Cosmx NSCLC lung5 rep3")
+
+ggsave("figures/cosmx_nsclc_l5r3_cellannot.png", bg = "white",
+       width = 9.5, height = 6.5, dpi = 500)
+```
+
+```{r}
+fnc <- findNearCells(spe3, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+pm <- scanHoods(fnc$distance)
+pm2 <- mergeByGroup(pm, fnc$cells)
+spe3 <- mergeHoodSpe(spe3, pm2)
+pmc <- colnames(pm2)
+```
+
+
+
+```{r, fig.height=6.5, fig.width=6}
+set.seed(1)
+
+png("figures/cosmx_probmatrix_heatmap.png", width = 7, height = 7, bg = "white",
+    units="in",res=1200)
+hm <- plotHoodMat(spe3, pm_cols = pmc, hm_height = 11, hm_width = 8)
+
+ComplexHeatmap::draw(hm)
+dev.off()
+```
+
+
+
+
+```{r}
+plotProbDist(spe3, targetCells = c("cell_6_1099"), 
+             pm_col = pmc, fill = pmc, color = "black") +
+  xlab("Neighborhoods") +
+  ylab("Probability") +
+  scale_fill_manual(values = col.p2) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))
+
+ggsave("figures/cosmx_cell_6_1099_hood_distributions.png", bg = "white", width = 4, height = 4)
+```
+
+
+
+```{r}
+plotTissue(spe3, targetcell = "cell_6_1099", color = cell_annotation,
+           size = 4, k_near = 100, targetsize = 6) +
+  scale_color_manual(values= col.p2) +
+  ggtitle("cell_6_1099") +
+  theme(plot.title = element_text(size = 15))
+
+ggsave("figures/cosmx_cell_6_1099.png", bg = "white", width = 6, height = 4)
+```
+
+
+```{r}
+spe3 <- calcMetrics(spe3, pm_cols = pmc)
+```
+
+
+```{r}
+plotTissue(spe3, color = entropy, size = 0.1, alpha = 0.6) +
+  scico::scale_color_scico(palette = "tokyo") +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=17),
+        legend.title = element_text(size = 20))
+
+ggsave("figures/cosmx_entropy.png", bg = "white", width = 8, height = 6)
+```
+
+
+```{r}
+plotTissue(spe3, color = perplexity, size = 0.1, alpha = 0.6) +
+  scico::scale_color_scico(palette = "turku") +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=17),
+        legend.title = element_text(size = 20))
+
+ggsave("figures/cosmx_perplexity.png", bg = "white", width = 8, height = 6)
+```
+
+```{r}
+png("figures/cosmx_colocal.png", width = 8, height = 6, bg = "white",
+    units="in",res=1200)
+colocalp <- plotColocal(spe3, pm_cols = pmc, hm_width = 8, hm_height = 8)
+ComplexHeatmap::draw(colocalp)
+dev.off()
+```
+
+
+```{r}
+spe3_sub <- spe3[,colData(spe3)$cell_annotation %in% c("Tumor.cells","transitional.club.AT2","T.cell.regulatory", "cDC1","T.cell.CD4","B.cell")]
+
+col.p_sub <- col.p2[c("Tumor.cells","transitional.club.AT2","T.cell.regulatory", "cDC1","T.cell.CD4","B.cell")]
+
+plotTissue(spe3_sub, size = 0.5, alpha = 0.9, color = cell_annotation, shape = 16) +
+  scale_color_manual(values = col.p_sub) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+  ggtitle("Cosmx NSCLC lung5 rep3-subset")
+
+ggsave("figures/cosmx_l5r3_subset_validate_colocal.png", bg = "white",
+       width = 8, height = 6, dpi = 500)
+```
+
+```{r fig.width=6, fig.height=5}
+
+selected_cells <- spatialCoords(spe3_sub) %>% 
+  as.data.frame() %>% 
+  filter(x >= -4600 & x <= 2300 & y <=4600) %>% 
+  rownames()
+
+spe3_sub_sb <- spe3_sub[, selected_cells]
+
+plotTissue(spe3_sub_sb, size = 2, alpha = 0.9, color = cell_annotation, shape = 16) +
+  scale_color_manual(values = col.p_sub) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+  ggtitle("Cosmx NSCLC lung5 rep3-subset")
+
+ggsave("figures/fig3b_colocalization_verification.png", height = 5, width = 7, bg = "white")
+```
+
+
+```{r}
+set.seed(11113)
+
+spe3 <- clustByHood(spe3, pm_cols = pmc, algo = "Lloyd", k = 10)
+```
+
+
+```{r, fig.width=7, fig.height=5}
+set.seed(9494)
+col.p <- c("#8B0000", "#8B4500", "#8B8B00", "#228B22", "#006400", "#00688B", "#2E8B57", "#00008B", "#4B0082", "#8B008B")
+names(col.p) <- unique(colData(spe3)$clusters)
+
+plotTissue(spe3, color = clusters, size = 0.1, alpha = 0.8) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5), nrow = 2))
+
+ggsave("figures/cosmx_l5r3_hoodclusts.png", bg = "white",
+       width = 8, height = 6)
+```
+
+
+
+```{r}
+colData(spe3)$clusters <- factor(colData(spe3)$clusters, levels = as.character(seq(12)))
+
+
+plotProbDist(spe3, pm_cols = pmc, by_cluster = TRUE, plot_all = TRUE,
+             show_clusters = as.character(seq(12)), color = clusters) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  xlab("Neighborhoods") +
+  ylab("Probability")
+
+
+ggsave("figures/cosmx_l5r3_clust_prob_dist.png", bg = "white",
+       width = 10, height = 9)
+```
+
+
+
+Get tumor-enriched and stromal-enriched neighborhoods from rep1-3.
+
+rep3
+
+
+```{r}
+colnames(spe3) <- gsub(pattern = "cell", replacement = "Lung5_rep3", colnames(spe3))
+
+spe3_macrophage_hood <- spe3[,colData(spe3)$clusters == "3"] # macrophage-enriched neighborhood
+spe3_tumor_stromal_hood <- spe3[,colData(spe3)$clusters == "8"] # stromal-enriched neighborhood
+#spe3_tumor_tclubat2_hood <- spe3[,colData(spe3)$clusters == "8"]
+
+colData(spe3_tumor_stromal_hood)$clust_des <- "Tumor+Stromal hood"
+colData(spe3_macrophage_hood)$clust_des <- "Tumor+Macrophage hood"
+#colData(spe3_tumor_tclubat2_hood)$clust_des <- "Tumor+TransitionalClub/AT2 hood"
+```
+
+
+```{r}
+plotTissue(spe3_macrophage_hood, color = cell_annotation, size = 0.5) +
+  scale_color_manual(values = col.p2)
+```
+
+
+```{r}
+plotTissue(spe3_tumor_stromal_hood, color = cell_annotation, size = 0.5) +
+  scale_color_manual(values = col.p2)
+```
+
+
+
+
+```{r, fig.width=7, fig.height=5}
+plotTissue(spe1, size = 0.1, alpha = 0.8, color = cell_annotation) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+  scale_color_manual(values = col.p2) +
+  ggtitle("Cosmx NSCLC lung5 rep1")
+
+ggsave("figures/cosmx_nsclc_l5r1_cellannot.png", bg = "white",
+       width = 8, height = 6)
+```
+
+```{r, fig.width=7, fig.height=5}
+plotTissue(spe2, size = 0.1, alpha = 0.8, color = cell_annotation) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+  scale_color_manual(values = col.p2) +
+  ggtitle("Cosmx NSCLC lung5 rep2")
+
+ggsave("figures/cosmx_nsclc_l5r2_cellannot.png", bg = "white",
+       width = 8, height = 6)
+```
+
+
+```{r}
+fnc <- findNearCells(spe1, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+pm <- scanHoods(fnc$distance)
+pm2 <- mergeByGroup(pm, fnc$cells)
+spe1 <- mergeHoodSpe(spe1, pm2)
+spe1 <- calcMetrics(spe1, pm_cols = pmc)
+set.seed(11123)
+spe1 <- clustByHood(spe1, pm_cols = pmc, algo = "Lloyd", k = 10)
+
+fnc <- findNearCells(spe2, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+pm <- scanHoods(fnc$distance)
+pm2 <- mergeByGroup(pm, fnc$cells)
+spe2 <- mergeHoodSpe(spe2, pm2)
+spe2 <- calcMetrics(spe2, pm_cols = pmc)
+set.seed(12312)
+spe2 <- clustByHood(spe2, pm_cols = pmc, algo = "Lloyd", k = 10)
+```
+
+
+```{r}
+colData(spe1)$clusters <- factor(colData(spe1)$clusters, levels = as.character(seq(12)))
+
+plotProbDist(spe1, pm_cols = pmc, by_cluster = TRUE, plot_all = TRUE,
+             show_clusters = as.character(seq(12)), color = clusters) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "none") +
+  xlab("Neighborhoods") +
+  ylab("Probability")
+
+
+ggsave("figures/cosmx_l5r1_clust_prob_dist.png", bg = "white",
+       width = 10, height = 9)
+```
+
+
+```{r}
+plotTissue(spe1, color = clusters, size = 0.1, alpha = 0.8) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5), nrow = 2))
+
+ggsave("figures/cosmx_l5r1_hoodclusts.png", bg = "white",
+       width = 8, height = 6)
+```
+
+
+rep1: cluster 10, cluster 9
+
+```{r}
+colnames(spe1) <- gsub(pattern = "cell", replacement = "Lung5_rep1", colnames(spe1))
+
+spe1_tumor_stromal_hood <- spe1[,colData(spe1)$clusters == "3"]
+spe1_macrophage_hood <- spe1[,colData(spe1)$clusters == "5"]
+#spe1_tumor_tclubat2_hood <- spe1[,colData(spe1)$clusters == "7"]
+
+colData(spe1_tumor_stromal_hood)$clust_des <- "Tumor+Stromal hood"
+colData(spe1_macrophage_hood)$clust_des <- "Tumor+Macrophage hood"
+#colData(spe1_tumor_tclubat2_hood)$clust_des <- "Tumor+TransitionalClub/AT2 hood"
+```
+
+
+```{r}
+colData(spe2)$clusters <- factor(colData(spe2)$clusters, levels = as.character(seq(12)))
+
+plotProbDist(spe2, pm_cols = pmc, by_cluster = TRUE, plot_all = TRUE,
+             show_clusters = as.character(seq(12)), color = clusters) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "none") +
+  xlab("Neighborhoods") +
+  ylab("Probability")
+
+
+ggsave("figures/cosmx_l5r2_clust_prob_dist.png", bg = "white",
+       width = 10, height = 9)
+```
+
+
+```{r}
+plotTissue(spe2, color = clusters, size = 0.1, alpha = 0.8) +
+  scale_color_manual(values = col.p) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=9)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5), nrow = 2))
+
+ggsave("figures/cosmx_l5r2_hoodclusts.png", bg = "white",
+       width = 8, height = 6)
+```
+
+rep2: cluster 11, cluster 9, cluster 6
+
+
+```{r}
+colnames(spe2) <- gsub(pattern = "cell", replacement = "Lung5_rep2", colnames(spe2))
+
+spe2_tumor_stromal_hood <- spe2[,colData(spe2)$clusters == "8"]
+spe2_macrophage_hood <- spe2[,colData(spe2)$clusters == "1"]
+#spe2_tumor_tclubat2_hood <- spe2[,colData(spe2)$clusters == "9"]
+
+colData(spe2_tumor_stromal_hood)$clust_des <- "Tumor+Stromal hood"
+colData(spe2_macrophage_hood)$clust_des <- "Tumor+Macrophage hood"
+#colData(spe2_tumor_tclubat2_hood)$clust_des <- "Tumor+TransitionalClub/AT2 hood"
+```
+
+
+```{r}
+plotTissue(spe1_macrophage_hood, color = cell_annotation, size = 0.5) +
+  scale_color_manual(values = col.p2)
+```
+
+
+```{r}
+plotTissue(spe1_tumor_stromal_hood, color = cell_annotation, size = 0.5) +
+  scale_color_manual(values = col.p2)
+```
+
+
+```{r}
+plotTissue(spe2_macrophage_hood, color = cell_annotation, size = 0.5) +
+  scale_color_manual(values = col.p2)
+```
+
+
+```{r}
+plotTissue(spe2_tumor_stromal_hood, color = cell_annotation, size = 0.5) +
+  scale_color_manual(values = col.p2)
+```
+
+```{r}
+spe_merge <- cbind(spe1_macrophage_hood, spe1_tumor_stromal_hood,
+                   spe2_macrophage_hood, spe2_tumor_stromal_hood,
+                   spe3_macrophage_hood, spe3_tumor_stromal_hood)
+```
+
+```{r}
+spe3 <- scater::runPCA(spe3)
+spe3 <- scater::runUMAP(spe3, dimred = "PCA")
+```
+
+```{r, fig.width=9, fig.height=8}
+standR::plotDR(spe3, dimred = "UMAP", color = cell_annotation, size = 0.5, alpha = 0.7) +
+  scale_color_manual(values = col.p2) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5, alpha = 1), nrow = 3)) +
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=13))
+
+ggsave("figures/cosmx_l5r3_umap_celltypes.png", bg = "white", height = 7, width = 10.5, dpi = 500)
+```
+
+```{r, fig.width=7, fig.height=6}
+standR::plotDR(spe3, dimred = "UMAP", color = clusters, size = 0.5, alpha = 0.7) +
+  scale_color_manual(values = col.p) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5, alpha = 1), nrow = 2)) +
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=15))
+
+ggsave("figures/cosmx_l5r3_umap_hoodcluster.png", bg = "white", height = 7, width = 10.5, dpi = 500)
+```
+
+
+test how many cells have their cell types as their max probability neighborhood?
+
+```{r}
+pm2_spe3 <- colData(spe3) %>% as.data.frame() %>% dplyr::select(all_of(pmc)) 
+max_prop_hoods <- colnames(pm2_spe3)[max.col(pm2_spe3, ties.method = "first")]
+
+x <- colData(spe3) %>% as.data.frame() %>% dplyr::select("cell_annotation")
+x$max_prop_hoods <- max_prop_hoods
+
+x %>% filter(cell_annotation == max_prop_hoods) %>% dim()
+
+dim(x)
+```
+
+```{r}
+spe_merge_tumor <- spe_merge[,colData(spe_merge)$cell_annotation == "Tumor.cells"]
+```
+
+
+```{r}
+assay(spe_merge_tumor, "logcounts") <- cpm(assay(spe_merge_tumor, 1), log = TRUE)
+
+
+spe_merge_tumor <- scater::runPCA(spe_merge_tumor)
+spe_merge_tumor <- scater::runUMAP(spe_merge_tumor, dimred = "PCA")
+
+```
+
+
+
+```{r, fig.width=7, fig.height=6}
+standR::plotDR(spe_merge_tumor, dimred = "UMAP", color = clust_des, size = 0.5, alpha = 1) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=12)) +
+  guides(color = guide_legend(override.aes=list(shape = 16, size = 5), title = "clusters")) +
+  scale_color_manual(values = c("#FBDE44FF", "#F65058FF", "#28334AFF")) +
+  labs(x = "UMAP1", y = "UMAP2")
+
+ggsave("figures/cosmx_3clusters_umap.png", bg = "white", height = 7, width = 8, dpi = 500)
+```
+
+
+```{r}
+library(scuttle)
+
+spe_sb <- summarizeAssayByGroup(spe_merge_tumor, 
+                                ids = colData(spe_merge_tumor)[,c("slide","clust_des")], 
+                                statistics = "sum")
+
+dge_raw <- DGEList(assay(spe_sb), samples = colData(spe_sb))
+
+assayNames(spe_sb) <- "counts"
+assay(spe_sb, "logcounts") <- cpm(assay(spe_sb, 1), log = TRUE)
+
+
+table(edgeR::filterByExpr(dge_raw))
+
+dge_raw <- dge_raw[edgeR::filterByExpr(dge_raw),]
+spe_sb <- spe_sb[edgeR::filterByExpr(spe_sb),]
+```
+
+
+
+
+```{r}
+standR::drawPCA(spe_sb, assay = 2, color = clust_des, 
+                shape = slide, size =5, alpha = .9) +
+  scale_color_manual(values = c("#F9A12EFF","#FC766AFF","#9B4A97FF")) +
+  guides(color = guide_legend(title = "clusters"))
+
+ggsave("figures/cosmx_pseudobulk_PCA.png", bg = "white", height = 4, width = 7)
+```
+
+
+
+```{r}
+design <- model.matrix(~ 0 + clust_des + slide, data = dge_raw$samples)
+
+colnames(design) <- gsub(" ","_",colnames(design)) %>%
+  gsub("clust_des","",.) %>%
+  gsub("/","_",.) %>%
+  gsub("\\+","_",.)
+
+```
+
+
+
+
+
+```{r}
+dge <- calcNormFactors(dge_raw)
+```
+
+
+```{r}
+standR::plotRLExpr(dge_raw, color = slide)
+
+standR::plotRLExpr(dge, color = slide)
+```
+
+
+```{r}
+v <- voom(dge, design, plot = TRUE)
+```
+
+
+```{r}
+contr.matrix <- makeContrasts(c1vc2 = Tumor_Macrophage_hood - Tumor_Stromal_hood,
+                              levels = colnames(design))
+
+fit <- lmFit(v, design = design)
+
+fit_contrast <- contrasts.fit(fit, contrasts = contr.matrix)
+
+efit <- eBayes(fit_contrast, robust = TRUE)
+
+plotSA(efit, main="Final model: Mean-variance trend")
+
+results_efit <- decideTests(efit, p.value = 0.05)
+summary_efit <- summary(results_efit)
+```
+
+
+```{r}
+de_results1 <- topTable(efit, coef = 1, sort.by = "P", n = Inf)
+```
+
+```{r}
+de_results1 %>%
+  as.data.frame() %>%
+  rownames_to_column("Genes") %>%
+  write_csv("./data/de_results_cosmx_tumor_cells_macrophagehood_vs_stromalood.csv")
+```
+
+
+
+```{r}
+de_results1 <- read_csv("./data/de_results_cosmx_tumor_cells_macrophagehood_vs_stromalood.csv") %>%
+  as.data.frame() %>%
+  column_to_rownames("Genes")
+
+preplot <- de_results1 %>%
+  mutate(DE = ifelse(adj.P.Val > 0.05, "NOT DE",
+                     ifelse(logFC > 0, "UP", "DOWN")))
+
+preplot %>%
+  ggplot(aes(AveExpr, logFC, col = DE)) +
+  geom_point(alpha = .6) +
+  scale_color_manual(values = c("blue", "gray", "red")) +
+  geom_hline(yintercept = 0, lty = 2, col = 2) +
+  ggrepel::geom_text_repel(data = preplot %>%
+                             filter(adj.P.Val <= 0.05) %>%
+                             rownames_to_column(), 
+                           aes(label = rowname)) +
+  theme_classic() +
+  ggtitle("Tumor cells from Macrophage vs. from Stromal Neighborhood")
+
+ggsave("figures/cosmx_de1_ma.png", bg = "white", height = 5, width = 6)
+```
+
+
+
+
+
+
+## Gene set testing
+
+### fry
+
+```{r}
+library(msigdb)
+
+msigdb <- appendKEGG(getMsigdb('hs'))
+#run fry
+gsc <- subsetCollection(msigdb, c('h'), c('CP:KEGG', 'GO:BP', 'GO:MF', 'GO:CC'))
+
+```
+
+
+
+```{r}
+fry_indices <- ids2indices(GSEABase::geneIds(gsc), rownames(dge))
+
+dge <- estimateDisp(dge, design = design, robust = TRUE)
+
+fry_res <- fry(dge, fry_indices, design = design, 
+               contrast = contr.matrix[,1],
+               robust = TRUE)
+```
+
+
+#### vissE
+
+
+##### up
+
+```{r}
+library(vissE)
+
+prepare_visse <- function(fry_res, dge, ix = NULL){
+  #prepare data for vissE
+  siggs <- gsc[rownames(fry_res)[fry_res$FDR < 0.05]]
+  if(length(siggs) < 10){
+    stop("Less than 10 significant gene-sets were detected. Skipped this.")
+  }
+  gStats <- de_results1$logFC
+  names(gStats) <- rownames(dge)
+  gsStats <- -log10(fry_res$FDR)# * c('Up' = 1, 'Down' = -1)[fry_res$Direction]
+  names(gsStats) <- rownames(fry_res)
+  gsStats <- gsStats[names(siggs)]
+  
+  #run vissE
+  ig <- computeMsigNetwork(computeMsigOverlap(siggs, thresh = 0.25), siggs)
+  grps <- findMsigClusters(ig, gsStats, minSize = 4)
+  
+  #vissE plots
+  if(is.null(ix)){
+    ix <- seq(pmin(9, length(grps)))
+  }
+  
+  
+  set.seed(36) #set seed for reproducible layout
+  #plot the top 12 clusters
+  
+  p1 <- plotMsigNetwork(ig, markGroups = grps[ix], 
+                       genesetStat = gsStats, 
+                       rmUnmarkedGroups = TRUE, nodeSF = 1.5) + 
+    labs(fill = 'ES')
+  #compute word clouds
+  p2 <- plotMsigWordcloud(siggs, grps[ix], type = 'Name')
+  #compute gene-level stats
+  p3 <- plotGeneStats(gStats, siggs, grps[ix], topN = 15) +
+    geom_hline(yintercept = 0, colour = 2, lty = 2) +
+    labs(y = 'logFC')
+  
+  return(list(p2, p1, p3))
+}
+
+
+```
+
+
+```{r, fig.height=10, fig.width=18}
+fry_res_up <- filter(fry_res, Direction == "Up")
+
+p_list <- prepare_visse(fry_res_up, dge)
+
+wrap_plots(p_list, ncol = 3) +
+  plot_annotation(title = 'Tumor cells from Mcrophage vs. from Stromal Neighborhood - Up-regulated')
+
+
+ggsave("figures/visse_de1_up.png", bg = "white", height = 7, width = 15)
+```
+
+
+```{r, fig.height=10, fig.width=18}
+fry_res_dn <- filter(fry_res, Direction == "Down")
+
+p_list <- prepare_visse(fry_res_dn, dge)
+
+wrap_plots(p_list, ncol = 3) +
+  plot_annotation(title = 'Tumor cells from Mcrophage vs. from Stromal Neighborhood - Down-regulated')
+
+ggsave("figures/visse_de1_dn.png", bg = "white", height = 10, width = 18)
+```
+
+
+
+

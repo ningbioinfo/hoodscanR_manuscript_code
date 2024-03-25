@@ -1,0 +1,698 @@
+---
+title: "hoodscanR:benchmarking neighborhood analysis performance to squidpy and Giotto."
+date: "`r Sys.Date()`"
+author: "Ning Liu"
+format:
+  pdf:
+    include-in-header:
+        text: |
+          \addtokomafont{section}{\bfseries\LARGE}
+          \addtokomafont{subsection}{\bfseries\Large}
+          \addtokomafont{subsubsection}{\bfseries\Large}
+          \addtokomafont{paragraph}{\bfseries\large}
+          \usepackage{fvextra}
+          \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+          \fvset{fontsize=\footnotesize}
+          \RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
+    code-line-numbers: false
+    geometry:
+      - left = 20mm
+      - right = 20mm
+    highlight-style: solarized
+    fig-format: png
+    fig-dpi: 300
+    fig-height: 6
+    fig-width: 8
+    fig-align: center
+    number-sections: true
+    number-depth: 4
+    fontsize: 11pt
+    execute:
+      echo: true
+      warning: false
+      cache: false
+    knitr:
+      opts_chunk:
+        tidy: formatR
+        prompt: true
+        R.options:
+          digits: 4
+          width: 80
+          scipen: 4
+          max.print: 80
+editor_options:
+  chunk_output_type: inline
+---
+
+
+
+```{r, message=FALSE}
+library(tidyverse)
+library(SpatialExperiment)
+library(scran)
+library(patchwork)
+library(ggplotify)
+library(grid)
+library(ComplexHeatmap)
+library(hoodscanR)
+library(Giotto)
+spe_x <- readRDS("./xenium_s1r1_spe.rds")
+spe_x <- readHoodData(spe_x, anno_col = "cell_types")
+
+colData(spe_x) %>%
+  as.data.frame() %>%
+  rownames_to_column("cellid") %>%
+  dplyr::select(c("cellid","cell_annotation")) %>%
+  write_csv("../hoodscanR_pre/squidpy/xeniumbc_rep1_cell_annotation.csv")
+  
+
+spe_c <- readRDS("./spe_Lung5_Rep2.rds")
+colData(spe_c)$cell_types <- ifelse(colData(spe_c)$cell_types == "other",
+                                   "Dividing.cells",
+                                   colData(spe_c)$cell_types) %>%
+  str_replace(., "cell.type.", "")
+spe_c <- spe_c[,!(colData(spe_c)$cell_types %in% c("cDC2","pDC","DC.mature",
+                                                "cDC1","Ciliated","Club",
+                                                "Dividing.cells","Macrophage.alveolar","NK.cell"))]
+spe_c <- readHoodData(spe_c, anno_col = "cell_types")
+
+colData(spe_c) %>%
+  as.data.frame() %>%
+  rownames_to_column("cellid") %>%
+  dplyr::select(c("cellid","cell_annotation")) %>%
+  write_csv("../hoodscanR_pre/squidpy/lung5_rep2_cell_annotation.csv")
+```
+
+This report runs the hoodscanR on two datasets:
+1. Xenium bc rep1
+2. Cosmx Lung5 rep2
+
+sub-sampling 10% ~ 100% of the datasets, run till cell-type co-localization. 
+
+
+```{r}
+
+
+# cc_x <- ncol(spe_x)
+# cc_c <- ncol(spe_c)
+# 
+# subsampling_p <- seq(0.1,1,by = 0.1)
+# 
+# spe_list_x <- list()
+# spe_list_c <- list()
+# set.seed(100)
+# for(i in 1:10){
+#   
+#   sample_n1 <- round(cc_x*subsampling_p[i])
+#   sample_n2 <- round(cc_c*subsampling_p[i])
+#   
+#   spe_list_x[[i]] <- spe_x[,sample(cc_x, sample_n1)]
+#   spe_list_c[[i]] <- spe_c[,sample(cc_c, sample_n2)]
+# }
+
+
+
+```
+
+
+```{r}
+# for(i in 1:10){
+#  data.frame("cells" = colnames(spe_list_x[[i]])) %>%
+#    write_csv(paste0("./subsampling_xenium/xenium_sub_",i,".csv"))
+# 
+#  data.frame("cells" = colnames(spe_list_c[[i]])) %>%
+#    write_csv(paste0("./subsampling_cosmx/cosmx_sub_",i,".csv"))
+# }
+
+
+```
+
+
+```{r}
+spe_list_x <- list()
+for(i in 1:10){
+  subsample_x <- read_csv(paste0('./subsampling_xenium/xenium_sub_',i,'.csv'))
+  spe_list_x[[i]] <- spe_x[,subsample_x$cells]
+}
+
+spe_list_c <- list()
+for(i in 1:10){
+  subsample_c <- read_csv(paste0('./subsampling_cosmx/cosmx_sub_',i,'.csv'))
+  spe_list_c[[i]] <- spe_c[,subsample_c$cells]
+}
+
+```
+
+
+
+
+
+
+# Run Giotto if it can be installed eventually.
+Nope, bad documentation, the search don't work in their site, can't even find the function, so many useless functions in the package, no wonder it's not in BioC.
+
+## giotto object
+
+```{r}
+gobj_cosmx_list <- list()
+for(i in 1:10){
+  gobj_cosmx_list[[i]] <- createGiottoObject(raw_exprs = assay(spe_list_c[[i]],1),
+                   spatial_locs = spatialCoords(spe_list_c[[i]]),
+                   cell_metadata = colData(spe_list_c[[i]]),
+                   gene_metadata = rowData(spe_list_c[[i]]))
+}
+
+gobj_xenium_list <- list()
+for(i in 1:10){
+  gobj_xenium_list[[i]] <- createGiottoObject(raw_exprs = assay(spe_list_x[[i]],1),
+                   spatial_locs = spatialCoords(spe_list_x[[i]]),
+                   cell_metadata = colData(spe_list_x[[i]]),
+                   gene_metadata = rowData(spe_list_x[[i]]))
+}
+```
+
+
+
+```{r}
+go_compute_times_x <- list()
+go_score_list_x <- list()
+for(i in 1:7){
+  print(i)
+  start.time <- Sys.time()
+  gobj_xenium_list[[i]] <- createSpatialDelaunayNetwork(gobj_xenium_list[[i]])
+  go_score_list_x[[i]] <- cellProximityEnrichment(gobj_xenium_list[[i]], cluster_column = "cell_annotation")
+  end.time <- Sys.time()
+  go_compute_times_x[i] <- difftime(start.time, end.time, units = "secs") %>% 
+    abs() %>% 
+    as.numeric()
+  gc()
+}
+```
+
+```{r}
+for(i in 8:10){
+  print(i)
+  start.time <- Sys.time()
+  gobj_xenium_list[[i]] <- createSpatialDelaunayNetwork(gobj_xenium_list[[i]])
+  gc()
+  go_score_list_x[[i]] <- cellProximityEnrichment(gobj_xenium_list[[i]], cluster_column = "cell_annotation")
+  end.time <- Sys.time()
+  go_compute_times_x[i] <- difftime(start.time, end.time, units = "secs") %>% 
+    abs() %>% 
+    as.numeric()
+  gc()
+}
+```
+
+
+```{r}
+go_compute_times_c <- list()
+go_score_list_c <- list()
+for(i in 1:10){
+  print(i)
+  start.time <- Sys.time()
+  gobj_cosmx_list[[i]] <- createSpatialDelaunayNetwork(gobj_cosmx_list[[i]])
+  go_score_list_c[[i]] <- cellProximityEnrichment(gobj_cosmx_list[[i]], cluster_column = "cell_annotation")
+  end.time <- Sys.time()
+  go_compute_times_c[i] <- difftime(start.time, end.time, units = "secs") %>% 
+    abs() %>% 
+    as.numeric()
+  gc()
+}
+```
+
+
+
+
+
+# Run hoodscanR
+
+```{r}
+fnc_list_x <- list()
+pm_list_x <- list()
+pm2_list_x <- list()
+compute_times_x <- c()
+pmc_x <- unique(colData(spe_x)$cell_annotation)
+hetamap_list_x <- list()
+for(i in 1:10){
+  start.time <- Sys.time()
+  fnc_list_x[[i]] <- findNearCells(spe_list_x[[i]], k = 100, reportDist = TRUE, 
+                                   anno_col = "cell_annotation")
+  pm_list_x[[i]] <- scanHoods(fnc_list_x[[i]]$distance)
+  pm2_list_x[[i]] <- mergeByGroup(pm_list_x[[i]], fnc_list_x[[i]]$cells)
+  spe_list_x[[i]] <- mergeHoodSpe(spe_list_x[[i]], pm2_list_x[[i]])
+  hetamap_list_x[[i]] <- plotColocal(spe_list_x[[i]], pm_cols = pmc_x, 
+                                     return_matrix = TRUE)
+  end.time <- Sys.time()
+  compute_times_x[i] <- difftime(start.time, end.time, units = "secs") %>% 
+    abs() %>% 
+    as.numeric()
+}
+```
+
+
+```{r}
+fnc_list_c <- list()
+pm_list_c <- list()
+pm2_list_c <- list()
+compute_times_c <- c()
+pmc_c <- unique(colData(spe_c)$cell_annotation)
+hetamap_list_c <- list()
+for(i in 1:10){
+  start.time <- Sys.time()
+  fnc_list_c[[i]] <- findNearCells(spe_list_c[[i]], k = 100, reportDist = TRUE, anno_col = "cell_annotation")
+  pm_list_c[[i]] <- scanHoods(fnc_list_c[[i]]$distance)
+  pm2_list_c[[i]] <- mergeByGroup(pm_list_c[[i]], fnc_list_c[[i]]$cells)
+  spe_list_c[[i]] <- mergeHoodSpe(spe_list_c[[i]], pm2_list_c[[i]])
+  hetamap_list_c[[i]] <- plotColocal(spe_list_c[[i]], pm_cols = pmc_c, 
+                                      return_matrix = TRUE)
+  end.time <- Sys.time()
+  compute_times_c[i] <- difftime(start.time, end.time, units = "secs") %>% 
+    abs() %>% 
+    as.numeric()
+}
+```
+
+# Computing time comparison
+
+
+```{r}
+hoodscanr_ct <- data.frame("dataset" = "xenium",
+           "cellcount" = unlist(lapply(spe_list_x, ncol)),
+           "times" = compute_times_x) %>%
+  rbind(data.frame("dataset" = "cosmx",
+           "cellcount" = unlist(lapply(spe_list_c, ncol)),
+           "times" = compute_times_c)) %>%
+  mutate(method = "hoodscanR")
+
+squidpy_ct <- read_csv("./subsampling_xenium/squidpy_sub_sample_xenium_runtimes.csv") %>%
+  dplyr::select(times) %>%
+  mutate(cellcount = unlist(lapply(spe_list_x, ncol)),
+         dataset = "xenium") %>%
+  rbind(read_csv("./subsampling_cosmx/squidpy_sub_sample_cosmx_runtimes.csv") %>%
+  dplyr::select(times) %>%
+  mutate(cellcount = unlist(lapply(spe_list_c, ncol)),
+         dataset = "cosmx")) %>%
+  mutate(method = "Squidpy")
+
+
+giotto_ct <- data.frame("dataset" = "xenium",
+                        "cellcount" = unlist(lapply(spe_list_x, ncol)),
+                        "times" = c(unlist(go_compute_times_x),NA, NA, NA)) %>%
+  rbind(data.frame("dataset" = "cosmx",
+                   "cellcount" = unlist(lapply(spe_list_c, ncol)),
+                   "times" = unlist(go_compute_times_c))) %>%
+  mutate(method = "Giotto")
+  
+```
+
+```{r}
+rbind(hoodscanr_ct, squidpy_ct, giotto_ct) %>%
+  mutate(dataset = ifelse(dataset == "xenium", "10X Xenium (313 genes)", "Nanostring CosMx (870 genes)")) %>%
+  ggplot(aes(cellcount, times)) +
+  geom_point(shape = 16, aes(color = method), size =3) +
+  geom_line(aes(group = method, color = method), linewidth = 1) +
+  scale_color_manual(values = c("#FBDE44FF", "#F65058FF","#28334AFF")) +
+  facet_wrap(~dataset, scale = "free") +
+  theme_classic() +
+  xlab("Cell count") +
+  ylab("Computing time (seconds, log10 scaled)") +
+  scale_y_log10()
+
+ggsave("figures/hoodscanR_vs_squidpy_vs_Giotto.png", bg = "white", height = 4, width = 9)
+
+```
+
+# Results comparison
+
+## load squidpy zscores
+
+```{r}
+squidpy_zscore_x <- list()
+for(i in 1:10){
+  x <- read_csv(paste0("./subsampling_xenium/squidpy_zscore_subsample_xenium_",i,".csv")) %>%
+    dplyr::select(-1) %>%
+    as.data.frame()
+  rownames(x) <- colnames(x)
+  squidpy_zscore_x[[i]] <- x
+}
+
+squidpy_zscore_c <- list()
+for(i in 1:10){
+  x <- read_csv(paste0("./subsampling_cosmx/squidpy_zscore_subsample_cosmx_",i,".csv")) %>%
+    dplyr::select(-1) %>%
+    as.data.frame()
+  
+  colnames(x)[colnames(x) == "other"] <- "Divding.cells"
+  rownames(x) <- colnames(x)
+  squidpy_zscore_c[[i]] <- x
+}
+```
+
+## calculate means for squidpy, hoodscanr and giotto across 10 subsampling
+
+```{r}
+squidpy_zscore_mean <- squidpy_zscore_c %>% 
+  lapply(function(x){rownames_to_column(x, "from") %>% 
+      gather(to, zscore, -from) %>% 
+      mutate(unified_int = paste0(from,"--",to)) %>% 
+      dplyr::select(c("unified_int","zscore"))}) %>% 
+  Reduce(function(x, y) left_join(x, y, by = "unified_int"), .) %>%
+  mutate(Squidpy = rowMeans(.[,-1])) %>% # take the mean of all zscore
+  dplyr::select(c("unified_int","Squidpy"))
+
+hoodscanr_cor_mean <- hetamap_list_c %>%
+  lapply(function(x){as.data.frame(x) %>%
+      rownames_to_column(., "from") %>% 
+      gather(to, cor, -from) %>% 
+      mutate(unified_int = paste0(from,"--",to)) %>% 
+      dplyr::select(c("unified_int","cor"))}) %>%
+  Reduce(function(x, y) left_join(x, y, by = "unified_int"), .) %>%
+  mutate(hoodscanR = rowMeans(.[,-1])) %>% # take the mean of all zscore
+  dplyr::select(c("unified_int","hoodscanR"))
+
+giotto_score_mean <- go_score_list_c %>%
+  lapply(function(x){x$enrichm_res %>% 
+      as.data.frame() %>% 
+      dplyr::select(c("unified_int","enrichm"))}) %>%
+  Reduce(function(x, y) left_join(x, y, by = "unified_int"), .) %>%
+  mutate(Giotto = rowMeans(.[,-1])) %>% # take the mean of all zscore
+  dplyr::select(c("unified_int","Giotto"))
+
+```
+
+
+```{r}
+library(ggpmisc)
+```
+
+
+
+```{r}
+x <- squidpy_zscore_mean %>% left_join(hoodscanr_cor_mean)
+
+x %>%
+  ggplot(aes(hoodscanR, Squidpy)) +
+  geom_point(shape = 21, fill = "gold", color = "navy", size = 3) +
+  geom_smooth(formula = y ~ x, method = "lm", color = "#7F2026", fill = "#ECB7BF") +
+  annotate("text", label = paste0("r = ", round(cor(x$Squidpy, x$hoodscanR), 3)), x=0, y=30) +
+  theme_classic() +
+  labs(x = "hoodscanR - correlation",
+       y = "Squidpy - zscore")
+
+ggsave("figures/benchmark1_cosmx.png", bg = "white", height = 4.5, width = 6)
+```
+
+
+```{r}
+x <- giotto_score_mean %>% left_join(hoodscanr_cor_mean)
+
+x %>%
+  ggplot(aes(hoodscanR, Giotto)) +
+  geom_point(shape = 21, fill = "gold", color = "navy", size = 3) +
+  geom_smooth(formula = y ~ x, method = "lm", color = "#7F2026", fill = "#ECB7BF") +
+  annotate("text", label = paste0("r = ", round(cor(x$Giotto, x$hoodscanR), 3)), x=0, y=2) +
+  theme_classic() +
+  labs(x = "hoodscanR - correlation",
+       y = "Giotto - enrichmentScore")
+
+ggsave("figures/benchmark2_cosmx.png", bg = "white", height = 4.5, width = 6)
+```
+
+
+```{r}
+x <- giotto_score_mean %>% left_join(squidpy_zscore_mean)
+
+x %>%
+  ggplot(aes(Squidpy, Giotto)) +
+  geom_point(shape = 21, fill = "gold", color = "navy", size = 3) +
+  geom_smooth(formula = y ~ x, method = "lm", color = "#7F2026", fill = "#ECB7BF") +
+  annotate("text", label = paste0("r = ", round(cor(x$Giotto, x$Squidpy), 3)), x=0, y=5) +
+  theme_classic() +
+  labs(x = "Squidpy - zscore",
+       y = "Giotto - enrichmentScore")
+
+ggsave("figures/benchmark3_cosmx.png", bg = "white", height = 4.5, width = 6)
+```
+
+
+
+
+
+## visualisation using heatmaps
+
+```{r}
+library(RColorBrewer)
+paletteLength <- 50
+myColor <- colorRampPalette(c("#3C1053FF", "white", "#DF6589FF"))(paletteLength)
+# length(breaks) == length(paletteLength) + 1
+# use floor and ceiling to deal with even/odd length pallettelengths
+
+
+```
+
+
+```{r}
+hmdf <- separate(squidpy_zscore_mean, unified_int, into = c("CellType1", "CellType2"), sep = "--") %>%
+  pivot_wider(names_from = CellType2, values_from = Squidpy) %>%
+  column_to_rownames("CellType1")
+
+myBreaks <- c(seq(min(hmdf), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(hmdf)/paletteLength, max(hmdf), length.out=floor(paletteLength/2)))
+
+
+png("figures/suqidpy_colocal_cosmx.png", bg = "white", width = 7, height = 5, units="in",res=1200)
+
+hm <- pheatmap(hmdf, border_color = "black", color = myColor, breaks = myBreaks, heatmap_legend_param = list(title = "Squidpy\nZscore"))
+
+draw(hm)
+
+dev.off()
+
+```
+
+
+```{r}
+hmdf <- separate(hoodscanr_cor_mean, unified_int, into = c("CellType1", "CellType2"), sep = "--") %>%
+  pivot_wider(names_from = CellType2, values_from = hoodscanR) %>%
+  column_to_rownames("CellType1")
+
+myBreaks <- c(seq(min(hmdf), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(hmdf)/paletteLength, max(hmdf), length.out=floor(paletteLength/2)))
+
+png("figures/hoodscanr_colocal_cosmx.png", bg = "white", width = 7, height = 5, units="in",res=1200)
+
+hm <- pheatmap(hmdf, border_color = "black", color = myColor, breaks = myBreaks, heatmap_legend_param = list(title = "hoodscanR\nCorrelation"))
+
+draw(hm)
+
+dev.off()
+
+```
+
+
+```{r}
+hmdf_pre <- separate(giotto_score_mean, unified_int, into = c("CellType1", "CellType2"), sep = "--")
+
+hmdf_pre <- hmdf_pre %>% rbind(hmdf_pre %>% magrittr::set_colnames(c("CellType2","CellType1","Giotto")))
+
+hmdf <- hmdf_pre %>%
+  arrange(CellType1, CellType2) %>% 
+  unique() %>%
+  pivot_wider(names_from = CellType2, values_from = Giotto) %>%
+  column_to_rownames("CellType1")
+
+
+myBreaks <- c(seq(min(hmdf), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(hmdf)/paletteLength, max(hmdf), length.out=floor(paletteLength/2)))
+
+png("figures/giotto_colocal_cosmx.png", bg = "white", width = 7, height = 5, units="in",res=1200)
+
+hm <- pheatmap(hmdf, border_color = "black", color = myColor, breaks = myBreaks, heatmap_legend_param = list(title = "Giotto\nEnrichScore"))
+
+draw(hm)
+
+dev.off()
+
+```
+
+
+## for xenium, do the same thing
+
+```{r}
+squidpy_zscore_mean2 <- squidpy_zscore_x %>% 
+  lapply(function(x){rownames_to_column(x, "from") %>% 
+      gather(to, zscore, -from) %>% 
+      mutate(unified_int = paste0(from,"--",to)) %>% 
+      dplyr::select(c("unified_int","zscore"))}) %>% 
+  Reduce(function(x, y) left_join(x, y, by = "unified_int"), .) %>%
+  mutate(Squidpy = rowMeans(.[,-1])) %>% # take the mean of all zscore
+  dplyr::select(c("unified_int","Squidpy"))
+
+hoodscanr_cor_mean2 <- hetamap_list_x %>%
+  lapply(function(x){as.data.frame(x) %>%
+      rownames_to_column(., "from") %>% 
+      gather(to, cor, -from) %>% 
+      mutate(unified_int = paste0(from,"--",to)) %>% 
+      dplyr::select(c("unified_int","cor"))}) %>%
+  Reduce(function(x, y) left_join(x, y, by = "unified_int"), .) %>%
+  mutate(hoodscanR = rowMeans(.[,-1])) %>% # take the mean of all zscore
+  dplyr::select(c("unified_int","hoodscanR"))
+
+giotto_score_mean2 <- go_score_list_x %>%
+  lapply(function(x){x$enrichm_res %>% 
+      as.data.frame() %>% 
+      dplyr::select(c("unified_int","enrichm"))}) %>%
+  Reduce(function(x, y) left_join(x, y, by = "unified_int"), .) %>%
+  mutate(Giotto = rowMeans(.[,-1])) %>% # take the mean of all zscore
+  dplyr::select(c("unified_int","Giotto"))
+
+```
+
+
+```{r}
+x <- squidpy_zscore_mean2 %>% left_join(hoodscanr_cor_mean2)
+
+x %>% 
+  ggplot(aes(hoodscanR, Squidpy)) +
+  geom_point(shape = 21, fill = "gold", color = "navy", size = 3) +
+  geom_smooth(formula = y ~ x, method = "lm", color = "#7F2026", fill = "#ECB7BF") +
+  annotate("text", label = paste0("r = ", round(cor(x$hoodscanR, x$Squidpy), 3)), x=0, y=800) +
+  theme_classic() +
+  labs(x = "hoodscanR - correlation",
+       y = "Squidpy - zscore")
+
+ggsave("figures/benchmark1_xenium.png", bg = "white", height = 4.5, width = 6)
+```
+
+
+```{r}
+x <- giotto_score_mean2 %>% left_join(hoodscanr_cor_mean2)
+
+x %>%
+  ggplot(aes(hoodscanR, Giotto)) +
+  geom_point(shape = 21, fill = "gold", color = "navy", size = 3) +
+  geom_smooth(formula = y ~ x, method = "lm", color = "#7F2026", fill = "#ECB7BF") +
+  annotate("text", label = paste0("r = ", round(cor(x$hoodscanR, x$Giotto), 3)), x=0, y=5) +
+  theme_classic() +
+  labs(x = "hoodscanR - correlation",
+       y = "Giotto - enrichmentScore")
+
+ggsave("figures/benchmark2_xenium.png", bg = "white", height = 4.5, width = 6)
+```
+
+
+```{r}
+x <- giotto_score_mean2 %>% left_join(squidpy_zscore_mean2)
+
+x %>%
+  ggplot(aes(Squidpy, Giotto)) +
+  geom_point(shape = 21, fill = "gold", color = "navy", size = 3) +
+  geom_smooth(formula = y ~ x, method = "lm", color = "#7F2026", fill = "#ECB7BF") +
+  annotate("text", label = paste0("r = ", round(cor(x$Squidpy, x$Giotto), 3)), x=0, y=5) +
+  theme_classic() +
+  labs(x = "Squidpy - zscore",
+       y = "Giotto - enrichmentScore")
+
+ggsave("figures/benchmark3_xenium.png", bg = "white", height = 4.5, width = 6)
+```
+
+
+
+```{r}
+hmdf <- separate(squidpy_zscore_mean2, unified_int, into = c("CellType1", "CellType2"), sep = "--") %>%
+  pivot_wider(names_from = CellType2, values_from = Squidpy) %>%
+  column_to_rownames("CellType1")
+
+myBreaks <- c(seq(min(hmdf), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(hmdf)/paletteLength, max(hmdf), length.out=floor(paletteLength/2)))
+
+
+png("figures/suqidpy_colocal_xenium.png", bg = "white", width = 7, height = 5, units="in",res=1200)
+
+hm <- pheatmap(hmdf, border_color = "black", color = myColor, breaks = myBreaks, heatmap_legend_param = list(title = "Squidpy\nZscore"))
+
+draw(hm)
+
+dev.off()
+
+```
+
+
+```{r}
+hmdf <- separate(hoodscanr_cor_mean2, unified_int, into = c("CellType1", "CellType2"), sep = "--") %>%
+  pivot_wider(names_from = CellType2, values_from = hoodscanR) %>%
+  column_to_rownames("CellType1")
+
+myBreaks <- c(seq(min(hmdf), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(hmdf)/paletteLength, max(hmdf), length.out=floor(paletteLength/2)))
+
+png("figures/hoodscanr_colocal_xenium.png", bg = "white", width = 7, height = 5, units="in",res=1200)
+
+hm <- pheatmap(hmdf, border_color = "black", color = myColor, breaks = myBreaks, heatmap_legend_param = list(title = "hoodscanR\nCorrelation"))
+
+draw(hm)
+
+dev.off()
+
+```
+
+
+```{r}
+hmdf_pre <- separate(giotto_score_mean2, unified_int, into = c("CellType1", "CellType2"), sep = "--")
+
+hmdf_pre <- hmdf_pre %>% rbind(hmdf_pre %>% magrittr::set_colnames(c("CellType2","CellType1","Giotto")))
+
+hmdf <- hmdf_pre %>%
+  arrange(CellType1, CellType2) %>% 
+  unique() %>%
+  pivot_wider(names_from = CellType2, values_from = Giotto) %>%
+  column_to_rownames("CellType1")
+
+
+myBreaks <- c(seq(min(hmdf), 0, length.out=ceiling(paletteLength/2) + 1), 
+              seq(max(hmdf)/paletteLength, max(hmdf), length.out=floor(paletteLength/2)))
+
+png("figures/giotto_colocal_xenium.png", bg = "white", width = 7, height = 5, units="in",res=1200)
+
+hm <- pheatmap(hmdf, border_color = "black", color = myColor, breaks = myBreaks, heatmap_legend_param = list(title = "Giotto\nEnrichScore"))
+
+draw(hm)
+
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
