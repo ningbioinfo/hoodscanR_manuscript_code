@@ -1,0 +1,312 @@
+---
+title: "Testing methods on benchmarking data"
+format: html
+editor: visual
+---
+
+4 R-based methods are included in this benchmark:
+
+BayeSpace BANKSY MERINGUE SeuratV5-BuildNicheAssay
+
+```{r}
+library(BayesSpace)
+library(Banksy)
+library(MERINGUE)
+library(Seurat)
+library(hoodscanR)
+
+library(SpatialExperiment)
+library(tidyverse)
+```
+
+# load data
+
+```{r}
+spe_starmap <- readRDS("./STARmap/spe_starmap.rds")
+cosmx_sample_id <- c("cosmx1","cosmx2","cosmx3")
+merfish_sample_id <- list.files("./MERFISH_mouse_colon_2024_Paolo/") %>%
+  .[endsWith(., "rds")] %>%
+  str_remove(., ".rds$")
+
+
+spe_list <- list()
+for(c in cosmx_sample_id){
+  spe_list[[c]] <- readRDS(paste0("./CosMx_NSCLC/spe_",c,".rds"))
+}
+
+for(m in merfish_sample_id){
+  spe_list[[m]] <- readRDS(paste0("./MERFISH_mouse_colon_2024_Paolo/",m,".rds"))
+}
+
+spe_list[["STARmap"]] <- spe_starmap
+
+
+xenium_sample_id <- list.files("./Xenium_BC_addon/") %>%
+  .[grepl("xenium[1-2]",.)] %>%
+  .[endsWith(., "rds")] %>%
+  str_remove(., ".rds$")
+
+spe_x_list <- list()
+for(x in xenium_sample_id){
+  spe_x_list[[x]] <- readRDS(paste0("./Xenium_BC_addon/",x,".rds"))
+}
+
+```
+
+# MERINGUE
+
+```{r}
+#| include: false
+go_meringue <- function(spe, fdt = 400){
+  cd <- assay(spe, "logcounts")
+  pos <- spatialCoords(spe)
+  
+  W <- getSpatialNeighbors(pos, filterDist = fdt)
+  
+  pca <- prcomp(t(cd), center = TRUE, scale. = TRUE)
+  pca_obj <- pca$x[,1:50]
+  
+  clusters <- getSpatiallyInformedClusters(pca_obj, W=W, k=50, alpha=1, beta=1)
+  spe$MERINGUE <- clusters
+  return(spe)
+}
+```
+
+# Seurat
+
+```{r}
+spe2seurat <- function(spe, assayname, fovname){
+  seu_obj <- CreateSeuratObject(counts = assay(spe, 1), 
+                              meta.data = as.data.frame(colData(spe)),
+                              assay = assayname)
+  centroids <- spatialCoords(spe) %>%
+    as.data.frame() %>%
+    magrittr::set_colnames(c("x","y")) %>%
+    rownames_to_column("cell") %>%
+    dplyr::select(c("x","y","cell"))
+  
+  cents <- CreateCentroids(centroids)
+
+  segmentations.data <- list(
+      "centroids" = cents,
+      "segmentation" = NULL
+    )
+  
+  coords <- CreateFOV(
+    coords = segmentations.data,
+    type = c("segmentation", "centroids"),
+    molecules = NULL,
+    assay = assayname
+  )
+  
+  seu_obj[[fovname]] <- coords
+  
+  return(seu_obj)
+}
+
+
+go_seurat <- function(spe, assayname, fovname, id = "cell_type", ncluster, k = 10){
+  seu_obj <- spe2seurat(spe, assayname, fovname)
+  
+  seu_obj <- BuildNicheAssay(object = seu_obj, fov = fovname, group.by = id,
+    niches.k = ncluster, neighbors.k = k)
+  
+  return(seu_obj)
+}
+```
+
+```{r}
+paths <- c(rep("./Xenium_BC_addon/",6),
+           rep("./CosMx_NSCLC/",3),
+           rep("./MERFISH_mouse_colon_2024_Paolo/",6),
+           rep("./STARmap/"))
+expnames <- names(spe_list)
+assaynames <- c(rep("xenium",6),rep("cosmx",3),rep("merfish",6),"starmap")
+ncluster <- lapply(spe_list, function(x){x$region %>% table() %>% length()}) %>% unlist() %>% as.numeric()
+```
+
+```{r}
+for(i in seq(length(spe_list))){
+    if(i %in% c(3,6)){
+      next
+    }
+    spe <- spe_list[[i]]
+    print(paste0("running Seurat on ", expnames[i]))
+    cpt <- system.time(seu_obj <- go_seurat(spe_list[[i]], assaynames[i], 
+                                            expnames[i], ncluster = ncluster[i]))
+    spe$Seurat_niche <- seu_obj@meta.data$niches
+    spe$Seurat_time <- cpt["elapsed"]
+    print("Finished!")
+    colData(spe) %>%
+        as.data.frame() %>%
+        rownames_to_column("cellid") %>%
+        write_csv(paste0(paths[i],expnames[i],"_SeuratNiche.csv"))
+}
+```
+
+# Banksy
+
+```{r}
+go_banksy <- function(spe, lambda = 0.2, k_geom = 30, 
+			                            npcs = 10, aname = "logcounts",
+						                          seeding = 1000, r){
+  spe <- computeBanksy(spe, assay_name = aname, compute_agf = TRUE,
+                       k_geom = k_geom)
+	    
+  set.seed(seeding)
+	spe <- runBanksyPCA(spe, lambda = lambda, use_agf = TRUE,
+	                    npcs = npcs)
+	        
+  set.seed(seeding)
+	spe <- clusterBanksy(spe, lambda = lambda, use_agf = TRUE,
+	                     npcs = npcs, resolution = r)
+  return(spe)
+}
+```
+
+```{r}
+r <- c(rep(0.5, 6),rep(0.05, 3), rep(0.15, 6), 0.45)
+
+for(i in seq(length(spe_list))){
+  print(paste0("running Banksy on ", expnames[i]))
+	cpt <- system.time(spe <- go_banksy(spe_list[[i]], r = r[i]))
+	names(colData(spe))[which(startsWith(names(colData(spe)),"clust_M"))] <- "Banksy"
+	spe$Banksy_time <- cpt["elapsed"]
+	print("Finished!")
+	colData(spe) %>%
+	  as.data.frame() %>%
+		rownames_to_column("cellid") %>%
+		write_csv(paste0(paths[i],expnames[i],"_banksy.csv"))
+	}
+```
+
+# BayesSpace
+
+```{r}
+library(BayesSpace)
+```
+
+```{r}
+spe <- spe_list[[10]]
+```
+
+```{r}
+spe <- scater::runPCA(spe)
+```
+
+```{r}
+spe$col <- spatialCoords(spe)[,1]
+spe$row <- spatialCoords(spe)[,2]
+```
+
+```{r}
+bayesspace_pre <- function(spe){
+  spe <- scater::runPCA(spe)
+  spe$col <- spatialCoords(spe)[,1]
+  spe$row <- spatialCoords(spe)[,2]
+  
+  return(spe)
+}
+
+go_bayesspace <- function(spe, ncluster){
+  spe <- spatialCluster(spe, q = ncluster, platform = "ST",
+                        nrep = 10000, d=10, 
+                        init.method="mclust", model="t", gamma=2)
+}
+```
+
+```{r}
+paths <- c(rep("./CosMx_NSCLC/",3),
+		              rep("./MERFISH_mouse_colon_2024_Paolo/",6),
+			                 rep("./STARmap/"))
+expnames <- names(spe_list)
+
+for(i in seq(length(spe_list))){
+  print(paste0("running BayesSpace on ", expnames[i]))
+  spe <- bayesspace_pre(spe_list[[i]])
+	cpt <- system.time(spe <- go_bayesspace(spe, ncluster = length(unique(spe$region))))
+	names(colData(spe))[which(names(colData(spe)) == "spatial.cluster")] <- "BayesSpace"
+	spe$BayesSpace_time <- cpt["elapsed"]
+	print("Finished!")
+	colData(spe) %>%
+	  as.data.frame() %>%
+		rownames_to_column("cellid") %>%
+		write_csv(paste0(paths[i],expnames[i],"_BayesSpace.csv"))
+	}
+```
+
+```{r}
+xpaths <- c(rep("./Xenium_BC_addon/",6))
+xexpnames <- names(spe_x_list)
+
+for(i in c(1,2,4,5)){
+  print(paste0("running BayesSpace on ", xexpnames[i]))
+  spe <- bayesspace_pre(spe_x_list[[i]])
+	cpt <- system.time(spe <- go_bayesspace(spe, ncluster = length(unique(spe$region))))
+	names(colData(spe))[which(names(colData(spe)) == "spatial.cluster")] <- "BayesSpace"
+	spe$BayesSpace_time <- cpt["elapsed"]
+	print("Finished!")
+	colData(spe) %>%
+	  as.data.frame() %>%
+		rownames_to_column("cellid") %>%
+		write_csv(paste0(xpaths[i],xexpnames[i],"_BayesSpace.csv"))
+	}
+```
+
+# hoodscanR
+
+```{r}
+spe <- spe_list[[10]]
+```
+
+```{r}
+go_hoodscanR <- function(spe){
+  fnc <- findNearCells(spe, k = 50, anno_col = "cell_type", reportDist = TRUE)
+  pm <- scanHoods(fnc$distance)
+  pm2 <- mergeByGroup(pm, fnc$cells)
+  spe <- mergeHoodSpe(spe, pm2)
+  pmc <- colnames(pm2)
+  spe <- clustByHood(spe, pm_cols = pmc, algo = "Lloyd", k = length(unique(spe$region)) + 3,
+                     val_names = "hoodscanR")
+}
+
+```
+
+```{r}
+paths <- c(rep("./Xenium_BC_addon/",6),
+           rep("./CosMx_NSCLC/",3),
+           rep("./MERFISH_mouse_colon_2024_Paolo/",6),
+           rep("./STARmap/"))
+expnames <- names(spe_list)
+
+for(i in seq(length(spe_list))){
+  print(paste0("running hoodscanR on ", expnames[i]))
+
+	cpt <- system.time(spe <- go_hoodscanR(spe_list[[i]]))
+
+	spe$hoodscanR_time <- cpt["elapsed"]
+	print("Finished!")
+	colData(spe) %>%
+	  as.data.frame() %>%
+		rownames_to_column("cellid") %>%
+		write_csv(paste0(paths[i],expnames[i],"_hoodscanR.csv"))
+	}
+```
+
+```{r}
+xpaths <- c(rep("./Xenium_BC_addon/",6))
+xexpnames <- names(spe_x_list)
+
+for(i in seq(length(spe_x_list))){
+  print(paste0("running hoodscanR on ", xexpnames[i]))
+
+	cpt <- system.time(spe <- go_hoodscanR(spe_x_list[[i]]))
+
+	spe$hoodscanR_time <- cpt["elapsed"]
+	print("Finished!")
+	colData(spe) %>%
+	  as.data.frame() %>%
+		rownames_to_column("cellid") %>%
+		write_csv(paste0(xpaths[i],xexpnames[i],"_hoodscanR.csv"))
+	}
+```

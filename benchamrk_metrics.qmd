@@ -1,0 +1,624 @@
+---
+title: "Calculating benchmark metrics"
+format: html
+editor: visual
+---
+
+
+```{r}
+library(tidyverse)
+library(hoodscanR)
+library(SpatialExperiment)
+source("../../utils/utils.R")
+library(ggpubr)
+library(aricode)
+library(fossil)
+library(patchwork)
+```
+
+
+# load data
+
+```{r}
+spe_starmap <- readRDS("./STARmap/spe_starmap.rds")
+cosmx_sample_id <- c("cosmx1","cosmx2","cosmx3")
+merfish_sample_id <- list.files("./MERFISH_mouse_colon_2024_Paolo/") %>%
+  .[endsWith(., "rds")] %>%
+  str_remove(., ".rds$")
+xenium_sample_id <- list.files("./Xenium_BC_addon/") %>%
+  .[grepl("xenium[1-2]",.)] %>%
+  .[endsWith(., "rds")] %>%
+  str_remove(., ".rds$")
+
+spe_list <- list()
+for(x in xenium_sample_id){
+  spe_list[[x]] <- readRDS(paste0("./Xenium_BC_addon/",x,".rds"))
+}
+
+for(c in cosmx_sample_id){
+  spe_list[[c]] <- readRDS(paste0("./CosMx_NSCLC/spe_",c,".rds"))
+}
+
+for(m in merfish_sample_id){
+  spe_list[[m]] <- readRDS(paste0("./MERFISH_mouse_colon_2024_Paolo/",m,".rds"))
+}
+
+spe_list[["STARmap"]] <- spe_starmap
+
+paths <- c(rep("./Xenium_BC_addon/",6),
+           rep("./CosMx_NSCLC/",3),
+           rep("./MERFISH_mouse_colon_2024_Paolo/",6),
+           rep("./STARmap/"))
+expnames <- names(spe_list)
+
+```
+
+# load method results
+
+```{r}
+methods <- c("hoodscanR","banksy","BayesSpace","SeuratNiche",
+             "utag","stagate","MERINGUE","spaGCN")
+```
+
+
+```{r}
+spe_mr_list <- list()
+
+for (d in seq(length(spe_list))) {
+  spe <- spe_list[[d]]
+  for(m in methods){
+    if (!file.exists(paste0(paths[d],expnames[d],"_",m,".csv"))){
+      next
+    }
+    df <- read_csv(paste0(paths[d],expnames[d],"_",m,".csv")) %>%
+      .[,c(ncol(.)-1,ncol(.))] %>%
+      magrittr::set_colnames(c(m, paste0(m,"_time")))
+    colData(spe)[,colnames(df)[1]] <- df[,1] %>% unlist() %>% as.character()
+    colData(spe)[,colnames(df)[2]] <- df[,2]
+  }
+  spe_mr_list[[d]] <- spe
+}
+
+names(spe_mr_list) <- names(spe_list)
+
+time_cols <- paste0(methods, "_time")
+```
+
+
+# metircs calculation
+
+```{r}
+entropy <- function(labels) {
+  probs <- table(labels) / length(labels)
+  -sum(probs * log(probs + 1e-10))  # Adding a small constant to avoid log(0)
+}
+
+homogeneity_score <- function(clusters, truth) {
+  # Total entropy of the class distribution
+  H_C <- entropy(truth)
+  
+  # Conditional entropy of the class distribution given the cluster assignment
+  H_C_given_K <- 0
+  cluster_labels <- unique(clusters)
+  
+  for (cluster in cluster_labels) {
+    cluster_indices <- which(clusters == cluster)
+    cluster_truth <- truth[cluster_indices]
+    cluster_entropy <- entropy(cluster_truth)
+    H_C_given_K <- H_C_given_K + (length(cluster_truth) / length(truth)) * cluster_entropy
+  }
+  
+  # Calculate homogeneity
+  homogeneity <- 1 - H_C_given_K / H_C
+  return(homogeneity)
+}
+```
+
+
+```{r}
+purity <- function(clusters, truth) {
+  sum(apply(table(truth, clusters), 2, max)) / length(truth)
+}
+
+
+calc_bm_metrics1 <- function(m, spe_index){
+  dat <- colData(spe_mr_list[[spe_index]])
+  if(!(m %in% colnames(dat))){
+    df <- data.frame("methods" = m,
+                     "score" = 0)
+  } else {
+    ari1 <- aricode::ARI(dat[,m], dat$region)
+    #print(ari1)
+    nmi1 <- aricode::NMI(dat[,m], dat$region)
+    purity1 <- purity(dat[,m], dat$region)
+    homogeneity_score1 <- homogeneity_score(dat[,m], dat$region)
+    
+    score <- mean(c(ari1, nmi1, purity1, homogeneity_score1))
+    
+    df <- data.frame("methods" = m,
+                     "score" = score)
+  }
+  return(df)
+}
+
+calc_bm_metrics2 <- function(m, spe_index){
+  dat <- colData(spe_mr_list[[spe_index]])
+  if(!(m %in% colnames(dat))){
+    df <- data.frame("methods" = m,
+                     "score" = 0,
+                     "ARI" = 0,
+                     "NMI" = 0,
+                     "Purity" = 0,
+                     "Homogeneity" = 0)
+  } else {
+    ari1 <- aricode::ARI(dat[,m], dat$region)
+    #print(ari1)
+    nmi1 <- aricode::NMI(dat[,m], dat$region)
+    purity1 <- purity(dat[,m], dat$region)
+    homogeneity_score1 <- homogeneity_score(dat[,m], dat$region)
+    
+    score <- mean(c(ari1, nmi1, purity1, homogeneity_score1))
+    
+    df <- data.frame("methods" = m,
+                     "score" = score,
+                     "ARI" = ari1,
+                     "NMI" = nmi1,
+                     "Purity" = purity1,
+                     "Homogeneity" = homogeneity_score1)
+  }
+  return(df)
+}
+
+
+```
+
+
+```{r}
+get_metrics_for_spe <- function(spe_index){
+  df <- as.list(methods) %>%
+    lapply(function(x){
+      calc_bm_metrics1(x, spe_index)
+    }) %>%
+    bind_rows() %>%
+    mutate(dataset = names(spe_mr_list)[spe_index])
+  
+  return(df)
+}
+
+get_metrics_for_spe2 <- function(spe_index){
+  df <- as.list(methods) %>%
+    lapply(function(x){
+      calc_bm_metrics2(x, spe_index)
+    }) %>%
+    bind_rows() %>%
+    mutate(dataset = names(spe_mr_list)[spe_index])
+  
+  return(df)
+}
+
+
+rdf <- as.list(seq(length(spe_mr_list))) %>%
+  lapply(get_metrics_for_spe) %>%
+  bind_rows() %>%
+  mutate(Platform = ifelse(grepl("xenium",dataset), "Xenium",
+                           ifelse(grepl("cosmx",dataset), "CosMx",
+                                  ifelse(grepl("slice",dataset), "Merfish", "STARmap"))))
+
+rdf_allstats <- as.list(seq(length(spe_mr_list))) %>%
+  lapply(get_metrics_for_spe2) %>%
+  bind_rows() %>%
+  mutate(Platform = ifelse(grepl("xenium",dataset), "Xenium",
+                           ifelse(grepl("cosmx",dataset), "CosMx",
+                                  ifelse(grepl("slice",dataset), "Merfish", "STARmap"))))
+
+
+rdf_allstats %>%
+  write_csv("./benchmark_metrics_all_stats.csv")
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+bp1 <- rdf %>%
+  mutate(methods = ifelse(methods == "banksy", "Banksy",
+                          ifelse(methods == "stagate", "STAGATE",
+                                 ifelse(methods == "utag", "UTAG", methods)))) %>%
+  ggplot(aes(methods, score)) +
+  geom_violin(trim = FALSE, fill = "#A1E9C5", color = "#1F6140")  +
+  stat_summary(fun = mean, geom = "point", shape = 13, size = 3, color = "#0C2719") +
+  geom_jitter(aes(color = methods, shape = Platform)) +
+  scale_color_manual(values = ning_colors) +
+  theme_ning() +
+  labs(x = "Methods", y = "Score", 
+       subtitle = "Score = mean(ARI + NMI + Purity + Homogeneity)") +
+  theme(axis.text.x = element_text(face = "italic",
+                                   size = 16, 
+                                   angle = 15, hjust = 1),
+        plot.subtitle = element_text(face = "italic", size = 14),
+        axis.title=element_text(size=17,face="bold")) +
+  ggtitle("Benchmarking methods in spatial domains detection") +
+  guides(color = "none", shape = "none")
+
+bp1
+
+ggsave("./figures/benchmark_scores.png", width = 8, height = 6, bg = "white")
+```
+
+
+```{r}
+get_times <- function(spe){
+  dat <- colData(spe)
+
+  df <- dat[,colnames(dat)[grepl("_time",colnames(dat))]] %>%
+    as.data.frame() %>%
+    unique()
+  
+  for(t in time_cols){
+    if (!(t %in% colnames(df))){
+      df[,t] <- Inf
+    }
+  }
+  
+  df <- df %>%
+    pivot_longer(colnames(.),
+                 names_to = "methods",
+                 values_to = "time")
+  return(df)
+}
+
+
+```
+
+
+
+```{r}
+time_df <- list()
+
+for(i in seq(length(spe_mr_list))){
+  time_df[[i]] <- get_times(spe_mr_list[[i]]) %>%
+    mutate(dataset = names(spe_mr_list)[i]) %>%
+    mutate(size = ncol(spe_mr_list[[i]]))
+}
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 7
+bp2 <- time_df %>% 
+  bind_rows() %>%
+  mutate(Platform = ifelse(grepl("xenium",dataset), "Xenium",
+                           ifelse(grepl("cosmx",dataset), "CosMx",
+                                  ifelse(grepl("slice",dataset), "Merfish", "STARmap")))) %>%
+  mutate(methods = ifelse(methods == "banksy_time", "Banksy",
+                          ifelse(methods == "stagate_time", "STAGATE",
+                                 ifelse(methods == "utag_time", "UTAG", str_remove(methods,"_time"))))) %>%
+  ggplot(aes(size, time, group = methods, color = methods)) +
+  scale_y_log10() +
+  geom_point(aes(shape = Platform)) +
+  geom_smooth(se = FALSE, method = "glm") +
+  scale_color_manual(values = ning_colors) +
+  theme_ning() +
+  labs(x = "Cell count", y = "Time (seconds, log10 scaled)") +
+  guides(color = guide_legend(override.aes=list(size = 5)), shape = guide_legend(override.aes=list(size = 5))) +
+  theme(legend.position = "bottom",
+          legend.text=element_text(size=15),
+          legend.title=element_text(size=16),
+        axis.text.x = element_text(size = 15),
+        axis.title=element_text(size=17,face="bold"))
+
+bp2
+
+ggsave("./figures/benchmark_computingTimes.png", width = 8, height = 7, bg = "white")
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 13
+
+bp1 + bp2 + plot_layout(nrow = 2, guides = "collect") & 
+  theme(legend.position = "bottom", 
+        legend.box = "vertical")
+
+ggsave("./figures/benchmark_merge.png", width = 8, height = 13, bg = "white")
+```
+
+
+
+
+
+# visualization
+
+
+## Xenium
+
+```{r}
+expn <- "spe_xenium1_sub1w"
+
+spe <- spe_mr_list[[expn]]
+```
+
+
+```{r}
+
+p_map_list <- list()
+
+p_map_list[["Pathology"]] <- plotTissue(spe, color = region, size = 0.1) +
+  scale_color_brewer(palette = "Paired") +
+  guides(color = guide_legend(title = "", override.aes = list(size = 5), 
+                              nrow = 4, byrow = TRUE)) +
+  theme(legend.position = "bottom") +
+  ggtitle("Pathological annotation")
+
+for(i in seq(length(methods))) {
+  method <- methods[i]
+  p_map_list[[method]] <- local({
+    current_method <- method
+    plotTissue(spe, color = get(current_method), size = 0.1) +
+      scale_color_brewer(palette = "Paired") +
+      guides(color = guide_legend(title = current_method, override.aes = list(size = 5))) +
+      theme(legend.position = "none") +
+      ggtitle(methods[i])
+  })
+}
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 11
+ggarrange(plotlist = p_map_list)
+
+ggsave("./figures/benchmark_spatial_map_xenium1sub.png", width = 10, height = 11, bg = "white")
+```
+
+```{r}
+expn <- "spe_xenium2_sub1w"
+
+spe <- spe_mr_list[[expn]]
+```
+
+
+```{r}
+
+p_map_list <- list()
+
+p_map_list[["Pathology"]] <- plotTissue(spe, color = region, size = 0.1) +
+  scale_color_brewer(palette = "Paired") +
+  guides(color = guide_legend(title = "", override.aes = list(size = 5), 
+                              nrow = 4, byrow = TRUE)) +
+  theme(legend.position = "bottom") +
+  ggtitle("Pathological annotation")
+
+for(i in seq(length(methods))) {
+  method <- methods[i]
+  p_map_list[[method]] <- local({
+    current_method <- method
+    plotTissue(spe, color = get(current_method), size = 0.1) +
+      scale_color_brewer(palette = "Paired") +
+      guides(color = guide_legend(title = current_method, override.aes = list(size = 5))) +
+      theme(legend.position = "none") +
+      ggtitle(methods[i])
+  })
+}
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 11
+ggarrange(plotlist = p_map_list)
+
+ggsave("./figures/benchmark_spatial_map_xenium2sub.png", width = 10, height = 11, bg = "white")
+```
+
+
+## CosMx
+
+
+```{r}
+expn <- "cosmx3"
+
+spe <- spe_mr_list[[expn]]
+```
+
+
+```{r}
+
+p_map_list <- list()
+
+p_map_list[["Pathology"]] <- plotTissue(spe, color = region, size = 0.1) +
+  scale_color_brewer(palette = "Paired") +
+  guides(color = guide_legend(title = "", override.aes = list(size = 5), 
+                              nrow = 2, byrow = TRUE)) +
+  theme(legend.position = "bottom") +
+  ggtitle("Pathological annotation")
+
+for(i in seq(length(methods))) {
+  method <- methods[i]
+  if(!(method %in% names(colData(spe)))){
+    next
+  }
+  p_map_list[[method]] <- local({
+    current_method <- method
+    plotTissue(spe, color = get(current_method), size = 0.1) +
+      scale_color_brewer(palette = "Paired") +
+      guides(color = guide_legend(title = current_method, override.aes = list(size = 5))) +
+      theme(legend.position = "none") +
+      ggtitle(methods[i])
+  })
+}
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+ggarrange(plotlist = p_map_list)
+
+ggsave("./figures/benchmark_spatial_map_cosmx3.png", width = 10, height = 8, bg = "white")
+```
+
+
+## Merfish
+
+
+```{r}
+expn <- "spe_072523_D35_m11_1_slice_1"
+
+spe <- spe_mr_list[[expn]]
+```
+
+
+```{r}
+
+p_map_list <- list()
+
+p_map_list[["Pathology"]] <- plotTissue(spe, color = region, size = 0.1) +
+  scale_color_brewer(palette = "Paired") +
+  guides(color = guide_legend(title = "", override.aes = list(size = 5), 
+                              nrow = 1, byrow = TRUE)) +
+  theme(legend.position = "bottom") +
+  ggtitle("Ground truth")
+
+for(i in seq(length(methods))) {
+  method <- methods[i]
+  if(!(method %in% names(colData(spe)))){
+    next
+  }
+  p_map_list[[method]] <- local({
+    current_method <- method
+    plotTissue(spe, color = get(current_method), size = 0.1) +
+      scale_color_brewer(palette = "Paired") +
+      guides(color = guide_legend(title = current_method, override.aes = list(size = 5))) +
+      theme(legend.position = "none") +
+      ggtitle(methods[i])
+  })
+}
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 9
+ggarrange(plotlist = p_map_list)
+ggsave("./figures/benchmark_spatial_map_merfish1.png", width = 10, height = 9, bg = "white")
+```
+
+
+```{r}
+p_map_list[["Pathology"]] <- plotTissue(spe, color = region, size = 0.1) +
+  scale_color_brewer(palette = "Paired") +
+  guides(color = guide_legend(title = "", override.aes = list(size = 5), 
+                              nrow = 1, byrow = TRUE)) +
+  theme(legend.position = "none") +
+  ggtitle("Ground truth")
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 9
+ggarrange(plotlist = p_map_list)
+ggsave("./figures/benchmark_spatial_map_merfish1_nolegend.png", width = 10, height = 9, bg = "white")
+```
+
+
+
+
+
+
+```{r}
+expn <- "spe_072523_D35_m6_1_slice_3"
+
+spe <- spe_mr_list[[expn]]
+```
+
+
+```{r}
+
+p_map_list <- list()
+
+p_map_list[["Pathology"]] <- plotTissue(spe, color = region, size = 0.1) +
+  scale_color_brewer(palette = "Paired") +
+  guides(color = guide_legend(title = "", override.aes = list(size = 5), 
+                              nrow = 1, byrow = TRUE)) +
+  theme(legend.position = "bottom") +
+  ggtitle("Ground truth")
+
+for(i in seq(length(methods))) {
+  method <- methods[i]
+  if(!(method %in% names(colData(spe)))){
+    next
+  }
+  p_map_list[[method]] <- local({
+    current_method <- method
+    plotTissue(spe, color = get(current_method), size = 0.1) +
+      scale_color_brewer(palette = "Paired") +
+      guides(color = guide_legend(title = current_method, override.aes = list(size = 5))) +
+      theme(legend.position = "none") +
+      ggtitle(methods[i])
+  })
+}
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 9
+ggarrange(plotlist = p_map_list)
+
+ggsave("./figures/benchmark_spatial_map_merfish6.png", width = 10, height = 9, bg = "white")
+```
+
+
+## STARmap
+
+
+```{r}
+expn <- "STARmap"
+
+spe <- spe_mr_list[[expn]]
+```
+
+
+```{r}
+
+p_map_list <- list()
+
+p_map_list[["Pathology"]] <- plotTissue(spe, color = region, size = 1) +
+  scale_color_brewer(palette = "Paired") +
+  guides(color = guide_legend(title = "", override.aes = list(size = 5), 
+                              nrow = 2, byrow = TRUE)) +
+  theme(legend.position = "bottom") +
+  ggtitle("Ground truth")
+
+for(i in seq(length(methods))) {
+  method <- methods[i]
+  if(!(method %in% names(colData(spe)))){
+    next
+  }
+  p_map_list[[method]] <- local({
+    current_method <- method
+    plotTissue(spe, color = get(current_method), size = 1) +
+      scale_color_brewer(palette = "Paired") +
+      guides(color = guide_legend(title = current_method, override.aes = list(size = 5))) +
+      theme(legend.position = "none") +
+      ggtitle(methods[i])
+  })
+}
+```
+
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+ggarrange(plotlist = p_map_list)
+
+ggsave("./figures/benchmark_spatial_map_starmap.png", width = 10, height = 8, bg = "white")
+```
+
+
+
+

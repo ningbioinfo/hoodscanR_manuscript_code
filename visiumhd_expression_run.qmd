@@ -1,0 +1,272 @@
+---
+title: "Neighborhood analysis of visiumHD mouse brain data using hoodscanR (gene expression)"
+date: "`r Sys.Date()`"
+author: "Ning Liu"
+format:
+  pdf:
+    include-in-header:
+        text: |
+          \addtokomafont{section}{\bfseries\LARGE}
+          \addtokomafont{subsection}{\bfseries\Large}
+          \addtokomafont{subsubsection}{\bfseries\Large}
+          \addtokomafont{paragraph}{\bfseries\large}
+          \usepackage{fvextra}
+          \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+          \fvset{fontsize=\footnotesize}
+          \RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
+    code-line-numbers: false
+    geometry:
+      - left = 20mm
+      - right = 20mm
+    highlight-style: solarized
+    fig-format: png
+    fig-dpi: 300
+    fig-height: 6
+    fig-width: 8
+    fig-align: center
+    number-sections: true
+    number-depth: 4
+    fontsize: 11pt
+    execute:
+      echo: true
+      warning: false
+      cache: false
+    knitr:
+      opts_chunk:
+        tidy: formatR
+        prompt: true
+        R.options:
+          digits: 4
+          width: 80
+          scipen: 4
+          max.print: 80
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(tidyverse)
+library(SpatialExperiment)
+library(hoodscanR)
+```
+
+
+```{r}
+spe <- readRDS("./spe_visiumHD_mouse_brain_subsetOnRegions.rds")
+```
+
+```{r}
+group_cols <- c("#EF8A62", "#67A9CF", "gold", "#D73027", "#542788", "#1A9850")
+names(group_cols) <- c("Calb2+","Cux1+","Neurod6+","Penk+","Pvalb+","Others")
+```
+
+```{r}
+tgenes <- c("Cux1","Pvalb","Neurod6","Penk","Calb2","Rbfox3")
+```
+
+
+```{r}
+#| fig-width: 6
+#| fig-height: 7
+plotTissue(spe, size = 0.1, color = group) +
+    scale_color_manual(values = group_cols) +
+    theme(legend.position = "bottom",
+          legend.text=element_text(size=18),
+          legend.title=element_text(size=19)) +
+    guides(color = guide_legend(override.aes=list(shape = 15, size = 6), nrow = 2))
+
+ggsave("figures/visiumHD_mousebrain_map_group.png", width = 6, height = 7, bg = "white")
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+plotTissue(spe, size = 0.1, color = group) +
+  scale_color_manual(values = group_cols) +
+  facet_wrap(~group) +
+  theme(legend.position = "none",
+        strip.text.x = element_text(size = 13, colour = "black")) 
+
+ggsave("figures/visiumHD_mousebrain_map_facet_group.png", width = 8, height = 6, bg = "white")
+```
+
+
+```{r}
+fnc <- findNearCells(spe, k = 100, anno_col = "group", reportDist = TRUE)
+pm <- scanHoods(fnc$distance)
+pm2 <- mergeByGroup(pm, fnc$cells)
+spe <- mergeHoodSpe(spe, pm2)
+pmc <- colnames(pm2)
+```
+
+
+```{r}
+set.seed(114514)
+spe <- clustByHood(spe, pm_cols = pmc, k = 7)
+```
+
+
+```{r}
+#| fig-width: 6
+#| fig-height: 7
+col.p_c <- c("#FFB6C1", "#FFD700", "#98FB98", "#87CEEB", "#FFA07A", "#C71585", "#00CED1", "#9370DB")
+names(col.p_c) <- seq(8)
+
+plotTissue(spe, color = clusters, size = 0.1) +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=18),
+        legend.title=element_text(size=19)) +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 6), nrow = 2))
+
+ggsave("figures/visiumHD_mousebrain_map_cluster.png", width = 6, height = 7, bg = "white")
+```
+
+```{r}
+#| fig-width: 6
+#| fig-height: 7
+
+plotTissue(spe, color = clusters, size = 0.1) +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=18),
+        legend.title=element_text(size=19)) +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 6), nrow = 2)) +
+  facet_wrap(~clusters)
+
+ggsave("figures/visiumHD_mousebrain_map_cluster_facetclusters.png", width = 6, height = 7, bg = "white")
+```
+
+
+```{r}
+#| fig-width: 7
+#| fig-height: 6
+plotProbDist(spe, pm_cols = pmc, by_cluster = TRUE, plot_all = TRUE,
+             show_clusters = as.character(seq(8)), color = clusters) +
+  xlab("Neighborhoods") +
+  ylab("Probability") +
+  scale_color_manual(values = col.p_c) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))
+
+ggsave("figures/visiumHD_mousebrain_hooddistribution.png", width = 7, height = 6, bg = "white")
+```
+
+```{r}
+spe$cells <- ifelse(spe$isNeuron & spe$clusters == "1", "NeuronsInCux1+Hood",
+                     ifelse(spe$isNeuron & spe$clusters == "2", "NeuronsInPenk+Hood",
+                            ifelse(spe$isNeuron & spe$clusters == "3", "NeuronsInNeurod6+Hood",
+                                   ifelse(spe$isNeuron & spe$clusters == "4", "NeuronsInPenk+Hood",
+                                          ifelse(spe$isNeuron & spe$clusters == "5", "NeuronsInCalb2+Hood",
+                                                 ifelse(spe$isNeuron & spe$clusters == "6", "NeuronsInPvalb+Hood", "OtherCells"))))))
+```
+
+
+```{r}
+#| fig-width: 6
+#| fig-height: 7
+tcols <- c("#756BB1", "#E7298A", "#045A8D", "#FFD92F", "#66A61E", "cyan")
+names(tcols) <- sort(unique(spe$target))
+
+spe_sub <- spe[,spe$cells != "OtherCells"]
+
+plotTissue(spe_sub, color = cells, size = 0.5) +
+  scale_color_manual(values = tcols) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=15),
+        legend.title=element_text(size=16)) +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 6), nrow = 3))
+
+ggsave("figures/visiumHD_mousebrain_map_cells.png", width = 6, height = 7, bg = "white")
+```
+
+
+```{r}
+library(scran)
+clust.spe_sub <- quickCluster(spe_sub) 
+deconv.sf.spe_sub <- calculateSumFactors(spe_sub, cluster = clust.spe_sub)
+spe_sub <- logNormCounts(spe_sub, size.factors = deconv.sf.spe_sub)
+```
+
+
+```{r}
+rownames(spe_sub) <- rowData(spe_sub)$ID
+```
+
+
+```{r}
+spe_sub <- scater::runPCA(spe_sub)
+spe_sub <- scater::runUMAP(spe_sub, dimred = "PCA")
+```
+
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 7
+standR::plotDR(spe_sub, dimred = "UMAP", color = cells, size = 0.5) +
+  scale_color_manual(values = tcols) +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5), nrow = 3)) +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=17)) +
+  labs(x = "UMAP1", y = "UMAP2") 
+
+ggsave("figures/visiumHD_mousebrain_umap_cells.png", width = 8, height = 7, bg = "white")
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+standR::plotDR(spe_sub, dimred = "UMAP", color = cells, size = 0.5) +
+  scale_color_manual(values = tcols) +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5), nrow = 2)) +
+  theme(legend.position = "none") +
+  labs(x = "UMAP1", y = "UMAP2") +
+  facet_wrap(~cells)
+
+ggsave("figures/visiumHD_mousebrain_umap_facetcells.png", width = 8, height = 5, bg = "white")
+```
+
+```{r}
+spe_sub$UMAP1 <- reducedDim(spe_sub, "UMAP")[,1]
+spe_sub$UMAP2 <- reducedDim(spe_sub, "UMAP")[,2]
+```
+
+
+```{r}
+#| fig-width: 6
+#| fig-height: 6
+plotTissue(spe_sub, color = UMAP1 >= 2 & cells == "NeuronsInNeurod6+Hood", size = 0.5) +
+  scale_color_manual(values = c("gray", "blue")) +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5), nrow = 1))
+
+ggsave("figures/visiumHD_mousebrain_map_subcells1.png", width = 6, height = 6, bg = "white")
+```
+
+
+```{r}
+#| fig-width: 6
+#| fig-height: 6
+plotTissue(spe_sub, color = UMAP2 >= 1 & cells == "NeuronsInCalb2+Hood", size = 0.5) +
+  scale_color_manual(values = c("gray", "blue")) +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5), nrow = 1))
+
+ggsave("figures/visiumHD_mousebrain_map_subcells2.png", width = 6, height = 6, bg = "white")
+```
+
+
+
+
+
+
+
+

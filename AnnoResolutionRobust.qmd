@@ -1,0 +1,195 @@
+---
+title: "Neighborhood analysis of Xenium breast cancer data using hoodscanR"
+date: "`r Sys.Date()`"
+author: "Ning Liu"
+format:
+  pdf:
+    include-in-header:
+        text: |
+          \addtokomafont{section}{\bfseries\LARGE}
+          \addtokomafont{subsection}{\bfseries\Large}
+          \addtokomafont{subsubsection}{\bfseries\Large}
+          \addtokomafont{paragraph}{\bfseries\large}
+          \usepackage{fvextra}
+          \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+          \fvset{fontsize=\footnotesize}
+          \RecustomVerbatimEnvironment{verbatim}{Verbatim}{}
+    code-line-numbers: false
+    geometry:
+      - left = 20mm
+      - right = 20mm
+    highlight-style: solarized
+    fig-format: png
+    fig-dpi: 300
+    fig-height: 6
+    fig-width: 8
+    fig-align: center
+    number-sections: true
+    number-depth: 4
+    fontsize: 11pt
+    execute:
+      echo: true
+      warning: false
+      cache: false
+    knitr:
+      opts_chunk:
+        tidy: formatR
+        prompt: true
+        R.options:
+          digits: 4
+          width: 80
+          scipen: 4
+          max.print: 80
+editor_options:
+  chunk_output_type: inline
+---
+
+
+```{r}
+library(tidyverse)
+library(SpatialExperiment)
+library(hoodscanR)
+```
+
+
+```{r}
+spe <- readRDS("./xenium_s1r1_spe.rds")
+
+```
+
+
+
+```{r}
+spe_high <- spe
+spe_med <- spe
+spe_low <- spe
+```
+
+```{r}
+spe_med$cell_types <- ifelse(grepl("T_Cells",spe_med$cell_types), "T_cells", spe_med$cell_types)
+spe_low$cell_types <- ifelse(spe_low$cell_types %in% c("Macrophages_1","CD8+_T_Cells",
+                                                       "CD4+_T_Cells","B_Cells",
+                                                       "Macrophages_2"), "Immune",
+                             spe_low$cell_types)
+```
+
+
+```{r}
+p1 <- plotTissue(spe_high, color = cell_types, size = 0.1) +
+   theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+    guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+    ggtitle("Xenium breast cancer - highres annotation")
+
+p2 <- plotTissue(spe_med, color = cell_types, size = 0.1) +
+   theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+    guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+    ggtitle("Xenium breast cancer - medidumres annotation")
+
+p3 <- plotTissue(spe_low, color = cell_types, size = 0.1) +
+   theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+    guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+    ggtitle("Xenium breast cancer - lowres annotation")
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 15
+p1+p2+p3+plot_layout(ncol = 1)
+```
+
+
+```{r}
+spe_high <- readHoodData(spe_high, anno_col = "cell_types")
+spe_med <- readHoodData(spe_med, anno_col = "cell_types")
+spe_low <- readHoodData(spe_low, anno_col = "cell_types")
+
+```
+
+
+```{r}
+fnc1 <- findNearCells(spe_high, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+fnc2 <- findNearCells(spe_med, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+fnc3 <- findNearCells(spe_low, k = 100, anno_col = "cell_annotation", reportDist = TRUE)
+
+pm1 <- scanHoods(fnc1$distance)
+pm2 <- scanHoods(fnc2$distance)
+pm3 <- scanHoods(fnc3$distance)
+
+pm2_1 <- mergeByGroup(pm1, fnc1$cells)
+pm2_2 <- mergeByGroup(pm2, fnc2$cells)
+pm2_3 <- mergeByGroup(pm3, fnc3$cells)
+
+spe_high <- mergeHoodSpe(spe_high, pm2_1)
+spe_med <- mergeHoodSpe(spe_med, pm2_2)
+spe_low <- mergeHoodSpe(spe_low, pm2_3)
+
+pmc1 <- colnames(pm2_1)
+pmc2 <- colnames(pm2_2)
+pmc3 <- colnames(pm2_3)
+```
+
+
+```{r}
+spe_high <- clustByHood(spe_high, pm_cols = pmc1, k = 10)
+spe_med <- clustByHood(spe_med, pm_cols = pmc2, k = 10)
+spe_low <- clustByHood(spe_low, pm_cols = pmc3, k = 10)
+```
+
+
+```{r}
+#| fig-width: 6.5
+#| fig-height: 6.5
+pco1 <- plotColocal(spe_high, pm_cols = pmc1, hm_width = 7, hm_height = 7)
+```
+
+```{r}
+#| fig-width: 6.5
+#| fig-height: 6.5
+pco2 <- plotColocal(spe_med, pm_cols = pmc2, hm_width = 7, hm_height = 7)
+```
+
+```{r}
+#| fig-width: 6.5
+#| fig-height: 6.5
+pco3 <- plotColocal(spe_low, pm_cols = pmc3, hm_width = 7, hm_height = 7)
+```
+
+
+
+
+```{r}
+aricode::NMI(spe_med$clusters,spe_high$clusters)
+aricode::NMI(spe_low$clusters,spe_high$clusters)
+```
+
+
+```{r}
+pc1 <- plotTissue(spe_high, color = clusters, size = 0.1) +
+   theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+    guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+    ggtitle("Xenium breast cancer - highres annotation")
+
+pc2 <- plotTissue(spe_med, color = clusters, size = 0.1) +
+   theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+    guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+    ggtitle("Xenium breast cancer - medidumres annotation, NMI = 0.804")
+
+pc3 <- plotTissue(spe_low, color = clusters, size = 0.1) +
+   theme(legend.position = "bottom",
+        legend.text=element_text(size=11)) +
+    guides(color = guide_legend(override.aes=list(shape = 16, size = 5))) +
+    ggtitle("Xenium breast cancer - lowres annotation, NMI = 0.885")
+```
+
+
+```{r}
+#| fig-width: 8
+#| fig-height: 15
+pc1+pc2+pc3+plot_layout(ncol = 1)
+```
